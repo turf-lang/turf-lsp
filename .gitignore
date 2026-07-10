@@ -1,0 +1,4 @@
+build/
+editors/vscode/out/
+editors/vscode/node_modules/
+.DS_Store
