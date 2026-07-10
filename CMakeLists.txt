@@ -20,6 +20,7 @@ set(SOURCES
     src/main.cpp
     src/LSPHandler.cpp
     src/CompilerService.cpp
+    src/SemanticQuery.cpp
 )
 
 add_executable(turf-lsp ${SOURCES})

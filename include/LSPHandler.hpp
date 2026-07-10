@@ -4,12 +4,14 @@
 #include <unordered_map>
 #include <nlohmann/json.hpp>
 #include "CompilerService.hpp"
+#include "DocumentAnalysis.hpp"
 
 using json = nlohmann::json;
 
 struct DocumentState {
     std::string text;
     int version;
+    std::unique_ptr<DocumentAnalysis> analysis;
 };
 
 class LSPHandler {
@@ -30,6 +32,8 @@ private:
     void handleDidOpen(const json& notification);
     void handleDidChange(const json& notification);
     void handleDidClose(const json& notification);
+    void handleHover(const json& request);
+    void handleDefinition(const json& request);
     void publishDiagnostics(const std::string& uri);
 
     // Helper to send a JSON-RPC response or notification

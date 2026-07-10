@@ -8,8 +8,8 @@
 
 CompilerService::CompilerService() {}
 
-std::vector<nlohmann::json> CompilerService::analyze(std::string_view source, std::string_view filename) {
-    std::vector<nlohmann::json> diagnostics;
+std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view source, std::string_view filename) {
+    auto analysis = std::make_unique<DocumentAnalysis>();
 
     // Clear previous compiler state
     DiagnosticEngine::clearDiagnostics();
@@ -74,6 +74,8 @@ std::vector<nlohmann::json> CompilerService::analyze(std::string_view source, st
         TypeChecker TC(R.symbolTable());
         TC.checkAll(ASTs);
 
+        analysis->asts = std::move(ASTs);
+
     } catch (const TurfError::TurfException&) {
         // compilation aborted, errors are in DiagnosticEngine
     } catch (...) {
@@ -94,8 +96,8 @@ std::vector<nlohmann::json> CompilerService::analyze(std::string_view source, st
             {"severity", diag.IsWarning ? 2 : 1}, // 1 = Error, 2 = Warning
             {"message", diag.Msg}
         };
-        diagnostics.push_back(lspDiag);
+        analysis->diagnostics.push_back(lspDiag);
     }
 
-    return diagnostics;
+    return analysis;
 }

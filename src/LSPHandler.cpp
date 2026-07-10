@@ -1,4 +1,5 @@
 #include "LSPHandler.hpp"
+#include "SemanticQuery.hpp"
 #include <iostream>
 #include <string>
 
@@ -32,6 +33,10 @@ void LSPHandler::handleMessage(const std::string& message) {
             handleDidChange(msg);
         } else if (method == "textDocument/didClose") {
             handleDidClose(msg);
+        } else if (method == "textDocument/hover") {
+            handleHover(msg);
+        } else if (method == "textDocument/definition") {
+            handleDefinition(msg);
         } else {
             // Handle other methods or ignore
             std::cerr << "Unhandled method: " << method << "\n";
@@ -49,7 +54,8 @@ void LSPHandler::handleInitialize(const json& request) {
     json result = {
         {"capabilities", {
             {"textDocumentSync", 1}, // 1 = Full text document sync
-            {"hoverProvider", false}, // Set to true when implemented
+            {"hoverProvider", true},
+            {"definitionProvider", true},
             {"completionProvider", {
                 {"resolveProvider", false},
                 {"triggerCharacters", {".", ":"}}
@@ -155,7 +161,7 @@ void LSPHandler::handleDidOpen(const json& notification) {
     std::string text = textDocument.value("text", "");
     int version = textDocument.value("version", 0);
 
-    m_documents[uri] = {text, version};
+    m_documents[uri] = {text, version, nullptr};
     publishDiagnostics(uri);
 }
 
@@ -168,7 +174,7 @@ void LSPHandler::handleDidChange(const json& notification) {
     auto contentChanges = params.value("contentChanges", json::array());
     if (!contentChanges.empty()) {
         std::string text = contentChanges[0].value("text", "");
-        m_documents[uri] = {text, version};
+        m_documents[uri] = {text, version, nullptr};
         publishDiagnostics(uri);
     }
 }
@@ -200,15 +206,87 @@ void LSPHandler::publishDiagnostics(const std::string& uri) {
         path = path.substr(7);
     }
 
-    auto diags = m_compiler.analyze(it->second.text, path);
+    auto analysis = m_compiler.analyze(it->second.text, path);
 
     json response = {
         {"jsonrpc", "2.0"},
         {"method", "textDocument/publishDiagnostics"},
         {"params", {
             {"uri", uri},
-            {"diagnostics", diags}
+            {"diagnostics", analysis->diagnostics}
         }}
+    };
+    sendMessage(response);
+
+    it->second.analysis = std::move(analysis);
+}
+
+void LSPHandler::handleHover(const json& request) {
+    auto id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    auto textDocument = params.value("textDocument", json::object());
+    std::string uri = textDocument.value("uri", "");
+    auto position = params.value("position", json::object());
+    int line = position.value("line", 0) + 1; // LSP is 0-indexed, AST is 1-indexed
+    int col = position.value("character", 0) + 1;
+
+    json result = nullptr;
+    auto it = m_documents.find(uri);
+    if (it != m_documents.end() && it->second.analysis) {
+        const ExprAST* node = SemanticQuery::findNodeAt(*(it->second.analysis), line, col);
+        if (node) {
+            auto text = SemanticQuery::hoverText(node);
+            if (text) {
+                result = {
+                    {"contents", {
+                        {"kind", "markdown"},
+                        {"value", *text}
+                    }}
+                };
+            }
+        }
+    }
+
+    json response = {
+        {"jsonrpc", "2.0"},
+        {"id", id},
+        {"result", result}
+    };
+    sendMessage(response);
+}
+
+void LSPHandler::handleDefinition(const json& request) {
+    auto id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    auto textDocument = params.value("textDocument", json::object());
+    std::string uri = textDocument.value("uri", "");
+    auto position = params.value("position", json::object());
+    int line = position.value("line", 0) + 1;
+    int col = position.value("character", 0) + 1;
+
+    json result = nullptr;
+    auto it = m_documents.find(uri);
+    if (it != m_documents.end() && it->second.analysis) {
+        const ExprAST* node = SemanticQuery::findNodeAt(*(it->second.analysis), line, col);
+        if (node) {
+            auto declLoc = SemanticQuery::getDeclarationLoc(node);
+            if (declLoc && declLoc->Line > 0) { // Valid location
+                // Assume same file for now (Phase 4 MVP)
+                result = {
+                    {"uri", uri},
+                    {"range", {
+                        {"start", {{"line", declLoc->Line - 1}, {"character", declLoc->Col - 1}}},
+                        {"end", {{"line", declLoc->Line - 1}, {"character", declLoc->Col}}}
+                    }}
+                };
+            }
+        }
+    }
+
+    json response = {
+        {"jsonrpc", "2.0"},
+        {"id", id},
+        {"result", result}
     };
     sendMessage(response);
 }
