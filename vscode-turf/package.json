@@ -1,0 +1,74 @@
+{
+  "name": "turf-lang",
+  "displayName": "Turf",
+  "description": "Language support for Turf",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:turf"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "turf",
+        "aliases": ["Turf", "turf"],
+        "extensions": [".tr"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "turf",
+        "scopeName": "source.turf",
+        "path": "./syntaxes/turf.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Turf configuration",
+      "properties": {
+        "turf.languageServer.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the turf-lsp executable."
+        },
+        "turf.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the Turf language server."
+        },
+        "turf.compiler.arguments": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Additional arguments to pass to the compiler."
+        },
+        "turf.enableSemanticTokens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable semantic token highlighting from the language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "18.x",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.1.3"
+  }
+}
