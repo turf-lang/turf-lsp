@@ -24,6 +24,8 @@ void LSPHandler::handleMessage(const std::string& message) {
             handleShutdown(msg);
         } else if (method == "exit") {
             handleExit();
+        } else if (method == "textDocument/completion") {
+            handleCompletion(msg);
         } else {
             // Handle other methods or ignore
             std::cerr << "Unhandled method: " << method << "\n";
@@ -87,6 +89,57 @@ void LSPHandler::handleExit() {
     } else {
         std::exit(1);
     }
+}
+
+void LSPHandler::handleCompletion(const json& request) {
+    auto id = request.value("id", json(nullptr));
+
+    // Basic keyword and builtin completion for Turf
+    // A proper implementation would check the document context using the URI and position.
+    json result = {
+        {"isIncomplete", false},
+        {"items", {
+            // Keywords (Kind 14)
+            {{"label", "fn"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "mut"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "immut"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "struct"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "extern"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "from"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "if"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "elseif"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "else"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "while"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "for"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "in"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "step"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "give"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "otherwise"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "break"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "continue"}, {"kind", 14}, {"detail", "Keyword"}},
+            {{"label", "return"}, {"kind", 14}, {"detail", "Keyword"}},
+            
+            // Types (Kind 7)
+            {{"label", "int"}, {"kind", 7}, {"detail", "Type"}},
+            {{"label", "double"}, {"kind", 7}, {"detail", "Type"}},
+            {{"label", "bool"}, {"kind", 7}, {"detail", "Type"}},
+            {{"label", "string"}, {"kind", 7}, {"detail", "Type"}},
+            {{"label", "ptr"}, {"kind", 7}, {"detail", "Type"}},
+            {{"label", "void"}, {"kind", 7}, {"detail", "Type"}},
+            
+            // Builtins & Snippets (Kind 3 for Function/Method)
+            {{"label", "assert"}, {"kind", 3}, {"detail", "Builtin Function"}, {"insertText", "assert(${1:condition}, \"${2:message}\")"}, {"insertTextFormat", 2}},
+            {{"label", "io.printline"}, {"kind", 3}, {"detail", "Standard Library"}, {"insertText", "io.printline(${1:text})"}, {"insertTextFormat", 2}}
+        }}
+    };
+
+    json response = {
+        {"jsonrpc", "2.0"},
+        {"id", id},
+        {"result", result}
+    };
+
+    sendMessage(response);
 }
 
 void LSPHandler::sendMessage(const json& message) {

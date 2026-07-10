@@ -19,6 +19,7 @@ private:
     void handleInitialized(const json& notification);
     void handleShutdown(const json& request);
     void handleExit();
+    void handleCompletion(const json& request);
 
     // Helper to send a JSON-RPC response or notification
     void sendMessage(const json& message);
