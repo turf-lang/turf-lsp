@@ -1,0 +1,52 @@
+{
+  "name": "turf-vscode",
+  "displayName": "Turf Language Server",
+  "description": "Official VSCode extension for the Turf programming language",
+  "version": "0.1.0",
+  "publisher": "turflang",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "turf",
+        "aliases": [
+          "Turf",
+          "turf"
+        ],
+        "extensions": [
+          ".turf"
+        ]
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Turf LSP Configuration",
+      "properties": {
+        "turf.server.path": {
+          "type": "string",
+          "default": "turf-lsp",
+          "description": "Path to the turf-lsp executable."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^8.1.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@types/node": "^16.11.7",
+    "typescript": "^4.9.5"
+  }
+}
