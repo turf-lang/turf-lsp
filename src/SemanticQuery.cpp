@@ -130,24 +130,24 @@ const ExprAST* SemanticQuery::findNodeAt(const DocumentAnalysis& analysis, int l
     return visitor.getBestNode();
 }
 
-std::optional<ResolverSourceLocation> SemanticQuery::getDeclarationLoc(const ExprAST* node) {
+std::optional<SymbolLocation> SemanticQuery::getDeclarationLoc(const ExprAST* node) {
     if (!node) return std::nullopt;
 
     if (auto varNode = dynamic_cast<const VariableExprAST*>(node)) {
         if (auto sym = varNode->getResolvedSymbol()) {
-            return sym->DeclLoc;
+            return SymbolLocation{sym->DeclLoc, ""};
         }
     } else if (auto varDecl = dynamic_cast<const VarDeclExprAST*>(node)) {
         if (auto sym = varDecl->getResolvedSymbol()) {
-            return sym->DeclLoc;
+            return SymbolLocation{sym->DeclLoc, ""};
         }
     } else if (auto callNode = dynamic_cast<const FuncCallExprAST*>(node)) {
         if (auto target = callNode->getResolvedCallTarget()) {
-            return target->DeclLoc;
+            return SymbolLocation{target->DeclLoc, target->SourceModule};
         }
     } else if (auto fnDef = dynamic_cast<const FuncDefExprAST*>(node)) {
         if (auto target = fnDef->getResolvedDef()) {
-            return target->DeclLoc;
+            return SymbolLocation{target->DeclLoc, target->SourceModule};
         }
     }
     return std::nullopt;
@@ -184,4 +184,105 @@ std::optional<std::string> SemanticQuery::hoverText(const ExprAST* node) {
         }
     }
     return std::nullopt;
+}
+
+class SemanticTokensVisitor : public ASTVisitor {
+public:
+    std::vector<SemanticToken> tokens;
+
+    void addToken(const SourceLocation& loc, int length, SemanticTokenType type, int modifiers = 0) {
+        if (loc.Line > 0 && length > 0) {
+            tokens.push_back({loc.Line, loc.Col, length, type, modifiers});
+        }
+    }
+
+    void visitVariable(VariableExprAST &Node) override {
+        int modifiers = 0;
+        if (auto sym = Node.getResolvedSymbol()) {
+            if (sym->IsImmutable) modifiers |= static_cast<int>(SemanticTokenModifier::Readonly);
+        }
+        addToken(Node.getLoc(), Node.getName().length(), SemanticTokenType::Variable, modifiers);
+    }
+    
+    void visitVarDecl(VarDeclExprAST &Node) override {
+        int modifiers = static_cast<int>(SemanticTokenModifier::Declaration);
+        if (Node.isImmutable()) {
+            modifiers |= static_cast<int>(SemanticTokenModifier::Readonly);
+        }
+        addToken(Node.getLoc(), Node.getName().length(), SemanticTokenType::Variable, modifiers);
+        if (Node.getInitializer()) {
+            const_cast<ExprAST*>(Node.getInitializer())->accept(*this);
+        }
+    }
+
+    void visitFuncDef(FuncDefExprAST &Node) override {
+        int modifiers = static_cast<int>(SemanticTokenModifier::Declaration);
+        addToken(Node.getLoc(), Node.getName().length(), SemanticTokenType::Function, modifiers);
+        if (Node.getBodyMut()) const_cast<ExprAST*>(Node.getBodyMut())->accept(*this);
+    }
+    
+    void visitFuncCall(FuncCallExprAST &Node) override {
+        if (auto calleeVar = dynamic_cast<const VariableExprAST*>(Node.getCallee())) {
+            addToken(calleeVar->getLoc(), calleeVar->getName().length(), SemanticTokenType::Function);
+        } else if (Node.getCallee()) {
+            const_cast<ExprAST*>(Node.getCallee())->accept(*this);
+        }
+        for (const auto& arg : Node.getArgs()) {
+            if (arg) const_cast<ExprAST*>(arg.get())->accept(*this);
+        }
+    }
+
+    void visitBlock(BlockExprAST &Node) override {
+        for (const auto& expr : Node.getExpressions()) {
+            if (expr) const_cast<ExprAST*>(expr.get())->accept(*this);
+        }
+    }
+
+    void visitIf(IfExprAST &Node) override {
+        for (const auto& branch : Node.getBranches()) {
+            if (branch.Cond) const_cast<ExprAST*>(branch.Cond.get())->accept(*this);
+            if (branch.Body) const_cast<ExprAST*>(branch.Body.get())->accept(*this);
+        }
+        if (Node.getElseBody()) const_cast<ExprAST*>(Node.getElseBody())->accept(*this);
+    }
+    
+    void visitWhile(WhileExprAST &Node) override {
+        if (Node.getCond()) const_cast<ExprAST*>(Node.getCond())->accept(*this);
+        if (Node.getBody()) const_cast<ExprAST*>(Node.getBody())->accept(*this);
+    }
+    
+    void visitFor(ForExprAST &Node) override {
+        if (Node.getStart()) const_cast<ExprAST*>(Node.getStart())->accept(*this);
+        if (Node.getEnd()) const_cast<ExprAST*>(Node.getEnd())->accept(*this);
+        if (Node.getStep()) const_cast<ExprAST*>(Node.getStep())->accept(*this);
+        if (Node.getBody()) const_cast<ExprAST*>(Node.getBody())->accept(*this);
+    }
+
+    void visitBinary(BinaryExprAST &Node) override {
+        if (Node.getLHS()) const_cast<ExprAST*>(Node.getLHS())->accept(*this);
+        if (Node.getRHS()) const_cast<ExprAST*>(Node.getRHS())->accept(*this);
+    }
+    
+    void visitAssignment(AssignmentExprAST &Node) override {
+        if (Node.getLHS()) const_cast<ExprAST*>(Node.getLHS())->accept(*this);
+        if (Node.getRHS()) const_cast<ExprAST*>(Node.getRHS())->accept(*this);
+    }
+};
+
+#include <algorithm>
+
+std::vector<SemanticToken> SemanticQuery::getSemanticTokens(const DocumentAnalysis& analysis) {
+    SemanticTokensVisitor visitor;
+    for (const auto& ast : analysis.asts) {
+        if (ast) {
+            const_cast<ExprAST*>(ast.get())->accept(visitor);
+        }
+    }
+    
+    auto tokens = std::move(visitor.tokens);
+    std::sort(tokens.begin(), tokens.end(), [](const SemanticToken& a, const SemanticToken& b) {
+        if (a.line != b.line) return a.line < b.line;
+        return a.col < b.col;
+    });
+    return tokens;
 }

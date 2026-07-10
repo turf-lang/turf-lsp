@@ -2,6 +2,10 @@
 #include "SemanticQuery.hpp"
 #include <iostream>
 #include <string>
+#include <llvm/Support/Path.h>
+#include <llvm/ADT/SmallString.h>
+
+extern std::string CompilerExecutablePath;
 
 LSPHandler::LSPHandler() : m_shutdownRequested(false) {}
 
@@ -37,6 +41,8 @@ void LSPHandler::handleMessage(const std::string& message) {
             handleHover(msg);
         } else if (method == "textDocument/definition") {
             handleDefinition(msg);
+        } else if (method == "textDocument/semanticTokens/full") {
+            handleSemanticTokens(msg);
         } else {
             // Handle other methods or ignore
             std::cerr << "Unhandled method: " << method << "\n";
@@ -56,6 +62,13 @@ void LSPHandler::handleInitialize(const json& request) {
             {"textDocumentSync", 1}, // 1 = Full text document sync
             {"hoverProvider", true},
             {"definitionProvider", true},
+            {"semanticTokensProvider", {
+                {"legend", {
+                    {"tokenTypes", {"variable", "function", "keyword", "type", "parameter", "struct", "string", "number", "operator"}},
+                    {"tokenModifiers", {"declaration", "readonly"}}
+                }},
+                {"full", true}
+            }},
             {"completionProvider", {
                 {"resolveProvider", false},
                 {"triggerCharacters", {".", ":"}}
@@ -269,18 +282,69 @@ void LSPHandler::handleDefinition(const json& request) {
     if (it != m_documents.end() && it->second.analysis) {
         const ExprAST* node = SemanticQuery::findNodeAt(*(it->second.analysis), line, col);
         if (node) {
-            auto declLoc = SemanticQuery::getDeclarationLoc(node);
-            if (declLoc && declLoc->Line > 0) { // Valid location
-                // Assume same file for now (Phase 4 MVP)
+            auto declLocOpt = SemanticQuery::getDeclarationLoc(node);
+            if (declLocOpt && declLocOpt->loc.Line > 0) { // Valid location
+                std::string targetUri = uri;
+                
+                // If it's a standard library module, resolve cross-file!
+                if (!declLocOpt->moduleName.empty()) {
+                    llvm::SmallString<128> StdlibPath(CompilerExecutablePath);
+                    llvm::sys::path::remove_filename(StdlibPath);
+                    llvm::sys::path::append(StdlibPath, "..", "lib", "std", declLocOpt->moduleName + ".tr");
+                    targetUri = "file://" + StdlibPath.str().str();
+                }
+
                 result = {
-                    {"uri", uri},
+                    {"uri", targetUri},
                     {"range", {
-                        {"start", {{"line", declLoc->Line - 1}, {"character", declLoc->Col - 1}}},
-                        {"end", {{"line", declLoc->Line - 1}, {"character", declLoc->Col}}}
+                        {"start", {{"line", declLocOpt->loc.Line - 1}, {"character", declLocOpt->loc.Col - 1}}},
+                        {"end", {{"line", declLocOpt->loc.Line - 1}, {"character", declLocOpt->loc.Col}}}
                     }}
                 };
             }
         }
+    }
+
+    json response = {
+        {"jsonrpc", "2.0"},
+        {"id", id},
+        {"result", result}
+    };
+    sendMessage(response);
+}
+
+void LSPHandler::handleSemanticTokens(const json& request) {
+    auto id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    auto textDocument = params.value("textDocument", json::object());
+    std::string uri = textDocument.value("uri", "");
+
+    json result = nullptr;
+    auto it = m_documents.find(uri);
+    if (it != m_documents.end() && it->second.analysis) {
+        auto tokens = SemanticQuery::getSemanticTokens(*(it->second.analysis));
+        
+        std::vector<int> data;
+        int prevLine = 1;
+        int prevCol = 1;
+
+        for (const auto& token : tokens) {
+            int deltaLine = token.line - prevLine;
+            int deltaStartChar = (deltaLine == 0) ? (token.col - prevCol) : (token.col - 1);
+            
+            data.push_back(deltaLine);
+            data.push_back(deltaStartChar);
+            data.push_back(token.length);
+            data.push_back(static_cast<int>(token.type));
+            data.push_back(token.modifiers);
+            
+            prevLine = token.line;
+            prevCol = token.col;
+        }
+
+        result = {
+            {"data", data}
+        };
     }
 
     json response = {

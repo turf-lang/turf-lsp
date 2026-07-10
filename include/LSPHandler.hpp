@@ -34,6 +34,7 @@ private:
     void handleDidClose(const json& notification);
     void handleHover(const json& request);
     void handleDefinition(const json& request);
+    void handleSemanticTokens(const json& request);
     void publishDiagnostics(const std::string& uri);
 
     // Helper to send a JSON-RPC response or notification
