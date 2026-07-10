@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 project(turf-lsp VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Fetch nlohmann/json for JSON-RPC parsing
@@ -19,12 +19,13 @@ include_directories(include)
 set(SOURCES
     src/main.cpp
     src/LSPHandler.cpp
+    src/CompilerService.cpp
 )
 
 add_executable(turf-lsp ${SOURCES})
 
-# Link nlohmann_json
-target_link_libraries(turf-lsp PRIVATE nlohmann_json::nlohmann_json)
+# Add turflang subdirectory to get the turfcore target
+add_subdirectory(../turflang turflang_build)
 
-# Later: link against turflang libraries here
-# target_link_libraries(turf-lsp PRIVATE turflang_core)
+# Link nlohmann_json and turfcore
+target_link_libraries(turf-lsp PRIVATE nlohmann_json::nlohmann_json turfcore)

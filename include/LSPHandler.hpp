@@ -1,9 +1,16 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 #include <nlohmann/json.hpp>
+#include "CompilerService.hpp"
 
 using json = nlohmann::json;
+
+struct DocumentState {
+    std::string text;
+    int version;
+};
 
 class LSPHandler {
 public:
@@ -20,9 +27,15 @@ private:
     void handleShutdown(const json& request);
     void handleExit();
     void handleCompletion(const json& request);
+    void handleDidOpen(const json& notification);
+    void handleDidChange(const json& notification);
+    void handleDidClose(const json& notification);
+    void publishDiagnostics(const std::string& uri);
 
     // Helper to send a JSON-RPC response or notification
     void sendMessage(const json& message);
 
+    std::unordered_map<std::string, DocumentState> m_documents;
+    CompilerService m_compiler;
     bool m_shutdownRequested;
 };

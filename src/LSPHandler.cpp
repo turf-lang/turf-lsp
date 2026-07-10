@@ -26,6 +26,12 @@ void LSPHandler::handleMessage(const std::string& message) {
             handleExit();
         } else if (method == "textDocument/completion") {
             handleCompletion(msg);
+        } else if (method == "textDocument/didOpen") {
+            handleDidOpen(msg);
+        } else if (method == "textDocument/didChange") {
+            handleDidChange(msg);
+        } else if (method == "textDocument/didClose") {
+            handleDidClose(msg);
         } else {
             // Handle other methods or ignore
             std::cerr << "Unhandled method: " << method << "\n";
@@ -139,6 +145,71 @@ void LSPHandler::handleCompletion(const json& request) {
         {"result", result}
     };
 
+    sendMessage(response);
+}
+
+void LSPHandler::handleDidOpen(const json& notification) {
+    auto params = notification.value("params", json::object());
+    auto textDocument = params.value("textDocument", json::object());
+    std::string uri = textDocument.value("uri", "");
+    std::string text = textDocument.value("text", "");
+    int version = textDocument.value("version", 0);
+
+    m_documents[uri] = {text, version};
+    publishDiagnostics(uri);
+}
+
+void LSPHandler::handleDidChange(const json& notification) {
+    auto params = notification.value("params", json::object());
+    auto textDocument = params.value("textDocument", json::object());
+    std::string uri = textDocument.value("uri", "");
+    int version = textDocument.value("version", 0);
+
+    auto contentChanges = params.value("contentChanges", json::array());
+    if (!contentChanges.empty()) {
+        std::string text = contentChanges[0].value("text", "");
+        m_documents[uri] = {text, version};
+        publishDiagnostics(uri);
+    }
+}
+
+void LSPHandler::handleDidClose(const json& notification) {
+    auto params = notification.value("params", json::object());
+    auto textDocument = params.value("textDocument", json::object());
+    std::string uri = textDocument.value("uri", "");
+
+    m_documents.erase(uri);
+
+    json response = {
+        {"jsonrpc", "2.0"},
+        {"method", "textDocument/publishDiagnostics"},
+        {"params", {
+            {"uri", uri},
+            {"diagnostics", json::array()}
+        }}
+    };
+    sendMessage(response);
+}
+
+void LSPHandler::publishDiagnostics(const std::string& uri) {
+    auto it = m_documents.find(uri);
+    if (it == m_documents.end()) return;
+
+    std::string path = uri;
+    if (path.find("file://") == 0) {
+        path = path.substr(7);
+    }
+
+    auto diags = m_compiler.analyze(it->second.text, path);
+
+    json response = {
+        {"jsonrpc", "2.0"},
+        {"method", "textDocument/publishDiagnostics"},
+        {"params", {
+            {"uri", uri},
+            {"diagnostics", diags}
+        }}
+    };
     sendMessage(response);
 }
 

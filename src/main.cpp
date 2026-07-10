@@ -1,8 +1,13 @@
 #include <iostream>
 #include <string>
 #include "LSPHandler.hpp"
+#include "llvm/Support/FileSystem.h"
 
-int main() {
+std::string CompilerExecutablePath;
+
+int main(int argc, char** argv) {
+    CompilerExecutablePath = llvm::sys::fs::getMainExecutable(argv[0], (void *)(intptr_t)main);
+
     // Disable synchronization with C-style I/O for performance and reliability
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(NULL);
