@@ -25,8 +25,8 @@ set(SOURCES
 
 add_executable(turf-lsp ${SOURCES})
 
-# Add turflang subdirectory to get the turfcore target
-add_subdirectory(../turflang turflang_build)
+# Add turf-lang subdirectory to get the turfcore target
+add_subdirectory(../turf-lang turflang_build)
 
 # Link nlohmann_json and turfcore
 target_link_libraries(turf-lsp PRIVATE nlohmann_json::nlohmann_json turfcore)
