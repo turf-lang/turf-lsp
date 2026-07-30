@@ -2,10 +2,26 @@
 #include "SemanticQuery.hpp"
 #include <iostream>
 #include <string>
+#include <sstream>
+#include <cctype>
 #include <llvm/Support/Path.h>
 #include <llvm/ADT/SmallString.h>
 
 extern std::string CompilerExecutablePath;
+
+// Shared by hover/definition/semanticTokens: they all need the document's
+// raw text as 0-indexed lines for SemanticQuery's name-location recovery
+// (see findNameLoc()'s doc comment in SemanticQuery.cpp).
+static std::vector<std::string> splitIntoLines(const std::string& text) {
+    std::vector<std::string> lines;
+    std::istringstream iss(text);
+    std::string lineStr;
+    while (std::getline(iss, lineStr)) {
+        if (!lineStr.empty() && lineStr.back() == '\r') lineStr.pop_back();
+        lines.push_back(lineStr);
+    }
+    return lines;
+}
 
 LSPHandler::LSPHandler() : m_shutdownRequested(false) {}
 
@@ -64,7 +80,7 @@ void LSPHandler::handleInitialize(const json& request) {
             {"definitionProvider", true},
             {"semanticTokensProvider", {
                 {"legend", {
-                    {"tokenTypes", {"variable", "function", "keyword", "type", "parameter", "struct", "string", "number", "operator"}},
+                    {"tokenTypes", {"variable", "function", "keyword", "type", "parameter", "struct", "string", "number", "operator", "namespace", "property", "enumMember", "method"}},
                     {"tokenModifiers", {"declaration", "readonly"}}
                 }},
                 {"full", true}
@@ -116,46 +132,105 @@ void LSPHandler::handleExit() {
     }
 }
 
+// Extracts the text of `line` (0-indexed) in `text`, up to (not including)
+// `character` -- what SemanticQuery::getCompletions() classifies its trigger
+// context from.
+static std::string lineTextUpToCursor(const std::string& text, int line, int character) {
+    size_t pos = 0;
+    for (int i = 0; i < line && pos != std::string::npos; ++i) {
+        pos = text.find('\n', pos);
+        if (pos != std::string::npos) pos++;
+    }
+    if (pos == std::string::npos) return "";
+
+    size_t lineEnd = text.find('\n', pos);
+    if (lineEnd == std::string::npos) lineEnd = text.size();
+
+    size_t cursorPos = pos + static_cast<size_t>(character);
+    if (cursorPos > lineEnd) cursorPos = lineEnd;
+
+    std::string line_ = text.substr(pos, cursorPos - pos);
+    if (!line_.empty() && line_.back() == '\r') line_.pop_back();
+    return line_;
+}
+
+static bool isIdentChar(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+// The buffer at the cursor is, almost by definition, mid-edit -- "io::" or
+// "p." with nothing (or a partial word) after it is not valid syntax on its
+// own, and turf-lang's recovery parser only resyncs at TOP-LEVEL statement
+// boundaries (see the turf-lang GitHub issue filed on this), not within a
+// function body. Left alone, a dangling trigger like this fails to parse the
+// whole enclosing function, losing every local variable declared in it --
+// exactly the declarations completion needs. Standard trick (also used by
+// clangd et al.): replace whatever partial identifier is already typed right
+// before the cursor with a synthetic, harmless placeholder identifier and a
+// statement terminator, so the surrounding block parses as a normal (if
+// semantically nonsensical) statement again. Used ONLY for a one-off,
+// throwaway analyze() call for this completion request -- never stored back
+// onto the document, which keeps showing the user's real, unmodified text.
+static std::string patchForCompletion(const std::string& text, int line, int character) {
+    size_t pos = 0;
+    for (int i = 0; i < line && pos != std::string::npos; ++i) {
+        pos = text.find('\n', pos);
+        if (pos != std::string::npos) pos++;
+    }
+    if (pos == std::string::npos) return text;
+
+    size_t lineEnd = text.find('\n', pos);
+    if (lineEnd == std::string::npos) lineEnd = text.size();
+
+    size_t cursorPos = pos + static_cast<size_t>(character);
+    if (cursorPos > lineEnd) cursorPos = lineEnd;
+
+    size_t prefixStart = cursorPos;
+    while (prefixStart > pos && isIdentChar(text[prefixStart - 1])) prefixStart--;
+
+    std::string patched = text;
+    patched.replace(prefixStart, cursorPos - prefixStart, "turfLspCursor;");
+    return patched;
+}
+
 void LSPHandler::handleCompletion(const json& request) {
     auto id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    auto textDocument = params.value("textDocument", json::object());
+    std::string uri = textDocument.value("uri", "");
+    auto position = params.value("position", json::object());
+    int line = position.value("line", 0);
+    int character = position.value("character", 0);
 
-    // Basic keyword and builtin completion for Turf
-    // A proper implementation would check the document context using the URI and position.
+    json items = json::array();
+
+    auto it = m_documents.find(uri);
+    if (it != m_documents.end() && it->second.analysis) {
+        std::string prefixText = lineTextUpToCursor(it->second.text, line, character);
+
+        std::string path = uri;
+        if (path.find("file://") == 0) path = path.substr(7);
+        std::string patchedText = patchForCompletion(it->second.text, line, character);
+        auto completionAnalysis = m_compiler.analyze(patchedText, path);
+
+        auto completions = SemanticQuery::getCompletions(*completionAnalysis, prefixText);
+        for (const auto& item : completions) {
+            json lspItem = {
+                {"label", item.label},
+                {"kind", item.kind}
+            };
+            if (!item.detail.empty()) lspItem["detail"] = item.detail;
+            if (!item.insertSnippet.empty()) {
+                lspItem["insertText"] = item.insertSnippet;
+                lspItem["insertTextFormat"] = 2; // Snippet
+            }
+            items.push_back(std::move(lspItem));
+        }
+    }
+
     json result = {
         {"isIncomplete", false},
-        {"items", {
-            // Keywords (Kind 14)
-            {{"label", "fn"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "mut"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "immut"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "struct"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "extern"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "from"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "if"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "elseif"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "else"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "while"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "for"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "in"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "step"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "give"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "otherwise"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "break"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "continue"}, {"kind", 14}, {"detail", "Keyword"}},
-            {{"label", "return"}, {"kind", 14}, {"detail", "Keyword"}},
-            
-            // Types (Kind 7)
-            {{"label", "int"}, {"kind", 7}, {"detail", "Type"}},
-            {{"label", "double"}, {"kind", 7}, {"detail", "Type"}},
-            {{"label", "bool"}, {"kind", 7}, {"detail", "Type"}},
-            {{"label", "string"}, {"kind", 7}, {"detail", "Type"}},
-            {{"label", "ptr"}, {"kind", 7}, {"detail", "Type"}},
-            {{"label", "void"}, {"kind", 7}, {"detail", "Type"}},
-            
-            // Builtins & Snippets (Kind 3 for Function/Method)
-            {{"label", "assert"}, {"kind", 3}, {"detail", "Builtin Function"}, {"insertText", "assert(${1:condition}, \"${2:message}\")"}, {"insertTextFormat", 2}},
-            {{"label", "io.printline"}, {"kind", 3}, {"detail", "Standard Library"}, {"insertText", "io.printline(${1:text})"}, {"insertTextFormat", 2}}
-        }}
+        {"items", items}
     };
 
     json response = {
@@ -221,12 +296,18 @@ void LSPHandler::publishDiagnostics(const std::string& uri) {
 
     auto analysis = m_compiler.analyze(it->second.text, path);
 
+    // Diagnostics are intentionally suppressed for now -- the analysis pass
+    // above still runs (it's what populates the AST/symbol table completion
+    // and hover depend on, and analysis->diagnostics is still collected), we
+    // just don't forward them to the client yet. Re-enabling is a one-line
+    // change (`analysis->diagnostics` instead of `json::array()`) once the
+    // false-positive sources this was turned off for are fully sorted.
     json response = {
         {"jsonrpc", "2.0"},
         {"method", "textDocument/publishDiagnostics"},
         {"params", {
             {"uri", uri},
-            {"diagnostics", analysis->diagnostics}
+            {"diagnostics", json::array()}
         }}
     };
     sendMessage(response);
@@ -246,7 +327,8 @@ void LSPHandler::handleHover(const json& request) {
     json result = nullptr;
     auto it = m_documents.find(uri);
     if (it != m_documents.end() && it->second.analysis) {
-        const ExprAST* node = SemanticQuery::findNodeAt(*(it->second.analysis), line, col);
+        std::vector<std::string> sourceLines = splitIntoLines(it->second.text);
+        const ExprAST* node = SemanticQuery::findNodeAt(*(it->second.analysis), line, col, sourceLines);
         if (node) {
             auto text = SemanticQuery::hoverText(node);
             if (text) {
@@ -280,7 +362,8 @@ void LSPHandler::handleDefinition(const json& request) {
     json result = nullptr;
     auto it = m_documents.find(uri);
     if (it != m_documents.end() && it->second.analysis) {
-        const ExprAST* node = SemanticQuery::findNodeAt(*(it->second.analysis), line, col);
+        std::vector<std::string> sourceLines = splitIntoLines(it->second.text);
+        const ExprAST* node = SemanticQuery::findNodeAt(*(it->second.analysis), line, col, sourceLines);
         if (node) {
             auto declLocOpt = SemanticQuery::getDeclarationLoc(node);
             if (declLocOpt && declLocOpt->loc.Line > 0) { // Valid location
@@ -322,8 +405,9 @@ void LSPHandler::handleSemanticTokens(const json& request) {
     json result = nullptr;
     auto it = m_documents.find(uri);
     if (it != m_documents.end() && it->second.analysis) {
-        auto tokens = SemanticQuery::getSemanticTokens(*(it->second.analysis));
-        
+        std::vector<std::string> sourceLines = splitIntoLines(it->second.text);
+        auto tokens = SemanticQuery::getSemanticTokens(*(it->second.analysis), sourceLines);
+
         std::vector<int> data;
         int prevLine = 1;
         int prevCol = 1;
