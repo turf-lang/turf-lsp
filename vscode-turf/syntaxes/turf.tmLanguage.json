@@ -2,15 +2,20 @@
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Turf",
   "patterns": [
-    {
-      "include": "#comments"
-    },
-    {
-      "include": "#keywords"
-    },
-    {
-      "include": "#strings"
-    }
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#scope-access" },
+    { "include": "#struct-decl" },
+    { "include": "#enum-decl" },
+    { "include": "#function-decl" },
+    { "include": "#import" },
+    { "include": "#keywords" },
+    { "include": "#constants" },
+    { "include": "#types" },
+    { "include": "#method-call" },
+    { "include": "#function-call" },
+    { "include": "#operators" }
   ],
   "repository": {
     "comments": {
@@ -26,18 +31,6 @@
         }
       ]
     },
-    "keywords": {
-      "patterns": [
-        {
-          "name": "keyword.control.turf",
-          "match": "\\b(if|else|while|for|return|break|continue|fn|import)\\b"
-        },
-        {
-          "name": "storage.type.turf",
-          "match": "\\b(int|float|string|bool|void|mut|immut|struct|extern)\\b"
-        }
-      ]
-    },
     "strings": {
       "patterns": [
         {
@@ -50,6 +43,163 @@
               "match": "\\\\."
             }
           ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.turf",
+          "match": "\\b\\d+(\\.\\d+)?\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.turf",
+          "match": "\\b(true|false|null|self)\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.turf",
+          "match": "\\b(if|elseif|else|while|for|in|step|give|otherwise|break|continue|return|compare|matches|done|to)\\b"
+        },
+        {
+          "name": "keyword.declaration.turf",
+          "match": "\\b(fn|mut|mutable|immut|immutable|struct|enum|extern|import|export|static|sizeof)\\b"
+        },
+        {
+          "name": "keyword.operator.scope.turf",
+          "match": "::"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.turf",
+          "match": "\\b(int|double|float|bool|string|ptr|void)\\b"
+        },
+        {
+          "comment": "Type position after ':' -- mut x: Point<int> = ..., fn f(x: SomeStruct): void",
+          "match": "(:)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.operator.type-annotation.turf" },
+            "2": { "name": "entity.name.type.turf" }
+          }
+        },
+        {
+          "comment": "Generic type arguments: List<int>, Stack<Point>",
+          "match": "\\b([A-Z][A-Za-z0-9_]*)\\s*(?=<)",
+          "name": "entity.name.type.turf"
+        }
+      ]
+    },
+    "import": {
+      "patterns": [
+        {
+          "comment": "import io; / import io::printline; / import io::[print, printline]; / import io::[*];",
+          "match": "\\b(import)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.turf" },
+            "2": { "name": "entity.name.namespace.turf" }
+          }
+        }
+      ]
+    },
+    "struct-decl": {
+      "patterns": [
+        {
+          "match": "\\b(struct)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.turf" },
+            "2": { "name": "entity.name.type.struct.turf" }
+          }
+        }
+      ]
+    },
+    "enum-decl": {
+      "patterns": [
+        {
+          "match": "\\b(enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.turf" },
+            "2": { "name": "entity.name.type.enum.turf" }
+          }
+        }
+      ]
+    },
+    "function-decl": {
+      "patterns": [
+        {
+          "comment": "fn add(...) / fn Point.distance(...) static -- struct-bound methods share this one declaration form (see docs/architecture/modules_and_scope_resolution.md §2.8.1)",
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)(\\.)?([A-Za-z_][A-Za-z0-9_]*)?",
+          "captures": {
+            "1": { "name": "keyword.declaration.turf" },
+            "2": { "name": "entity.name.type.struct.turf" },
+            "3": { "name": "keyword.operator.accessor.turf" },
+            "4": { "name": "entity.name.function.turf" }
+          }
+        },
+        {
+          "comment": "Plain free-function declaration: fn add(...)",
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "keyword.declaration.turf" },
+            "2": { "name": "entity.name.function.turf" }
+          }
+        }
+      ]
+    },
+    "scope-access": {
+      "patterns": [
+        {
+          "comment": "io::printline(...) / Color::Red / StructName::new(...) -- Left is a namespace/type, Right is a member",
+          "match": "([A-Za-z_][A-Za-z0-9_]*)\\s*(::)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "entity.name.namespace.turf" },
+            "2": { "name": "keyword.operator.scope.turf" },
+            "3": { "name": "entity.name.function.turf" }
+          }
+        }
+      ]
+    },
+    "method-call": {
+      "patterns": [
+        {
+          "comment": "instance.method(...) / instance.field",
+          "match": "(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "keyword.operator.accessor.turf" },
+            "2": { "name": "entity.name.function.member.turf" }
+          }
+        },
+        {
+          "match": "(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.operator.accessor.turf" },
+            "2": { "name": "variable.other.property.turf" }
+          }
+        }
+      ]
+    },
+    "function-call": {
+      "patterns": [
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "name": "entity.name.function.turf"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.turf",
+          "match": "(->|=>|==|!=|<=|>=|&&|\\|\\||\\+=|-=|\\*=|/=|=|\\+|-|\\*|/|%|<|>|!|&|\\.\\.\\.)"
         }
       ]
     }
