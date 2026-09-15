@@ -128,13 +128,29 @@ color), never correctness bugs, so shipping M1 on `findNameLoc()` is fine.
   wired up in Phase 0. No string/number-literal tokens are emitted today (see
   P1.c), so the "multibyte token length" failure mode this task worried about
   doesn't currently have a code path that could hit it.
-- ⬜ **P1.c** Not done — genuinely blocked, not skipped for convenience.
-  Confirmed by reading `Types.h`/`SymbolTable.h`: `TurfType` has no source
-  location of its own at all (types are semantic value objects, not AST nodes
-  with a span), and `Symbol` has no parameter-vs-local flag. Both are real
-  compiler-side additions (doc 02 §B territory) with no existing hook to build
-  on — not attempted this session to avoid touching turf-lang's type/symbol
-  representation as a side effect of LSP work.
+- ✅ **P1.c** Done (2026-09-15). The two turf-lang-side gaps this was
+  blocked on are closed: `VariableSymbol::IsParameter` (a parameter is
+  just a pre-bound local through the same `declareVariable()` call, with
+  nothing to tell it apart from an ordinary one -- set `true` at the one
+  real call site, `Resolver::visitFuncDef()`), and per-annotation source
+  spans (`ParamDecl::TypeLoc`, `VarDeclExprAST::TypeLoc`,
+  `StructField::NameLoc`/`TypeLoc`) -- every one of these was already
+  computed locally by the parser at each annotation site just to anchor a
+  void-type error message, then discarded; turf-lang now keeps it instead
+  of adding new parsing logic. `SemanticTokensVisitor` (`SemanticQuery.cpp`)
+  now emits: a parameter's declaration (name + type) and every later USE
+  (via the resolved symbol's `IsParameter`) as `Parameter`/`Type`; a var
+  decl's `: T` as `Type`; a struct field's name as `Property` (declaration
+  modifier) and its `: T` as `Type` -- previously only the struct's own
+  name was tokenized. The synthetic implicit `self` parameter (never
+  written in source) correctly produces no phantom declaration-site
+  token (`Loc`/`TypeLoc` default `{0,0}`, already guarded by
+  `addToken()`), while a real `self` reference inside a method body still
+  tokenizes normally. Verified live against a running server (scratch
+  JSON-RPC client, not committed) on a function with typed params, a var
+  decl, a struct with typed fields, a struct method using `self`, and a
+  generic var decl (`List<int>`, confirming a generic's rendered name
+  length matches its source span).
 - ✅ **P1.d** Implemented: `semanticTokensProvider.full.delta: true` advertised;
   `LSPHandler` caches the last full token-data array + a monotonic `resultId`
   per uri (`m_semanticTokensCache`, worker-thread-only); `full/delta` computes

@@ -98,7 +98,7 @@ Read the existing code before implementing: `src/CompilerService.cpp`,
 | Completion | ✅ context-aware | bare / `Ident::` / `instance.`; snippets. Runs a *second* analyze per request; no `import` context; no `resolve`; no scope-precise filtering. |
 | Hover | ✅ basic | var/func/method/struct. No doc-comments, no enum/param/field hover. |
 | Go to definition | ✅ local + cross-file | Cross-file resolution goes through `ResolveModuleFile()` (the real module search, same as the compiler's own `import` resolution) — the old hardcoded `lib/std/<name>.tr` bug is fixed. No `declaration`/`typeDefinition`. |
-| Semantic tokens | ✅ full + delta | Visitor emits tokens; relies on textual name-loc recovery. `full/delta` implemented (int-level diff + `resultId` cache, doc 04 P1.d). No `range` tokens (P2.e); no `parameter`/type-annotation coverage (P1.c — genuinely blocked on a compiler-side gap, not skipped). |
+| Semantic tokens | ✅ full + delta | Visitor emits tokens; relies on textual name-loc recovery. `full/delta` implemented (int-level diff + `resultId` cache, doc 04 P1.d). `parameter`/type-annotation coverage done (P1.c, 2026-09-15) — params (decl + every use), var-decl `: T`, and struct-field name+`: T` now tokenize, using new turf-lang-side spans. No `range` tokens (P2.e). |
 | Find references | ❌ none | Doc 08. |
 | Formatting | ❌ none | No formatter exists anywhere in the codebase. Doc 09 builds one. |
 | Rename / code actions | ❌ none | Doc 10. |
@@ -152,13 +152,15 @@ everything; do it first.
   done: P1.5 (field-testing against real editor usage — no live editor session
   available this session) and P1.6 (optional pull model, explicitly "later").
 - ✅ `semanticTokens/full/delta` implemented (doc 04 P1.d); P1.b (encoding
-  correctness) verified as already structurally correct, no change needed. Not
-  done: P1.a (grammar-directory consolidation — real blast-radius file/dir
-  work that doc 11 already owns, see "two things to fix up front" above) and
-  P1.c (type-annotation/parameter tokens — genuinely blocked on a compiler-side
-  gap: `TurfType` carries no source span, `Symbol` carries no
-  parameter-vs-local flag; confirmed by reading `Types.h`/`SymbolTable.h`, not
-  assumed).
+  correctness) verified as already structurally correct, no change needed.
+  ✅ P1.c done (2026-09-15): the compiler-side gap (`TurfType` had no source
+  span, `Symbol` had no parameter-vs-local flag) is now closed in turf-lang
+  (`VariableSymbol::IsParameter`, `ParamDecl`/`VarDeclExprAST`/`StructField`
+  gaining `TypeLoc`/`NameLoc` spans) and consumed on the LSP side —
+  parameters, var-decl type annotations, and struct fields now tokenize.
+  Not done: P1.a (grammar-directory consolidation — real blast-radius
+  file/dir work that doc 11 already owns, see "two things to fix up front"
+  above).
 
 ### Phase 2 — "Understand code" (doc 05, 06, 07)
 - Completion: add `import` context + scope-precise filtering + `resolve` for
