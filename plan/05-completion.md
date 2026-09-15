@@ -158,7 +158,12 @@ overload's `signature()` with the active parameter highlighted. Reuses
   all 4 function/method completion sites, `data` carries the flat
   symbol name + owning module, lazy doc-comment fill reuses hover's
   same-file/cross-file strategy. `resolveProvider` now advertised true.
-- **P2.4** Scope-distance ranking + de-dup + `sortText` (G3, G6).
+- ✅ **P2.4** Done (2026-09-16): tiered `sortText` (locals/fields "0" >
+  current-file functions/structs/enums/instance-methods "1" >
+  keywords/types/literals "2"), scope-distance sub-ranking within the
+  locals tier (closer declaration first; forward references pushed
+  behind, never dropped). De-dup (G3) needed no new code -- the
+  underlying map was already name-keyed.
 - **P2.5** Prefix pre-filter via `SuggestionIndex` trie; `isIncomplete` for big
   sets (G5).
 - **P2.6** Chained member access + `self.` (edge cases).
