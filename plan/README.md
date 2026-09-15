@@ -162,11 +162,25 @@ everything; do it first.
   file/dir work that doc 11 already owns, see "two things to fix up front"
   above).
 
-### Phase 2 — "Understand code" (doc 05, 06, 07)
-- Completion: add `import` context + scope-precise filtering + `resolve` for
-  lazy docs; reuse the cached analysis.
-- Hover: doc-comments, enums, params, fields, types.
-- Definition/declaration/typeDefinition with correct cross-file resolution.
+### Phase 2 — "Understand code" (doc 05, 06, 07) — ✅ core done (2026-09-15)
+- ✅ Completion: `import <prefix>` module-name context shipped (doc 05 G2,
+  via turf-lang's new `ListAvailableModules()`). Not done: `import mod::<prefix>`
+  symbol listing, `completionItem/resolve`, scope-distance ranking (P2.3–P2.5).
+- ✅ Hover: `range` added to every hover result; struct field access, enum
+  members, and module-import names now hover correctly (doc 06 P2.1, part
+  of P2.2). Not done: doc-comments (P2.3), overload listing (P2.4).
+- ✅ Definition (cross-file fix, prior session) + declaration (delegates to
+  definition) + typeDefinition (variable/expr → struct/enum decl,
+  including cross-file into an imported module) all working (doc 07
+  P2.1/P2.3/P2.4). Not done: `LocationLink` (P2.2/P2.5, still plain `Location`).
+- Found and fixed along the way (not originally scoped): `CompilerService::
+  analyze()` never called `ParsePreludeImports()`, so the LSP silently
+  never auto-imported `int`/`double`/`bool`/`char`/`strings`/`array` into
+  any file it analyzed — ordinary code relying on a prelude-provided
+  operator/UFCS method with no explicit import falsely failed to
+  typecheck only under the LSP, never under the real `turf` CLI. Fixed;
+  every visitor that walks `asts` for user-facing output now skips the
+  synthesized prelude entries via `DocumentAnalysis::preludeImportCount`.
 
 ### Phase 3 — "Navigate" (doc 08)
 - Find references + document highlight, workspace-wide (needs the workspace
@@ -188,7 +202,7 @@ everything; do it first.
 |---|---|---|
 | M0 | Responsive, serialized server; cached analysis; cancellation | ✅ Phase 0 done (2026-09-15) |
 | M1 | Live red/yellow squiggles + full highlighting in both editors | ✅ server-side core done (2026-09-15); editor-side verification (P1.5) and the grammar-directory consolidation (P1.a, doc 11) still open |
-| M2 | Completion (incl. imports) + hover + go-to-def working end-to-end | M1, Phase 2 |
+| M2 | Completion (incl. imports) + hover + go-to-def working end-to-end | ✅ core done (2026-09-15) — `LocationLink`/doc-comments/`mod::` symbol completion still open |
 | M3 | Find references + document highlight | M2, Phase 3 |
 | M4 | Format-on-save + rename + quick-fixes | M2, Phase 4 |
 | M5 | Published extensions, Neovim client, green CI | all |

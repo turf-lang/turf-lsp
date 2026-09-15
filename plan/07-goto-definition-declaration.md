@@ -93,21 +93,40 @@ demand.
 - Multibyte in target file → target mapper handles it.
 
 ## Phased tasks
-- **P2.1** Replace the stdlib path with `resolveModuleFile()` (doc 02 §A). This
-  alone fixes cross-file def for all relocated stdlib modules + user modules.
-- **P2.2** Return `LocationLink` with proper selection/target ranges via a
-  target-file `PositionMapper`.
-- **P2.3** Implement `declaration` (mostly delegates to definition; special-case
-  `extern`).
-- **P2.4** Implement `typeDefinition` (variable/expr → its struct/enum decl).
-- **P2.5** Use `NameLoc` (doc 02 §B) for precise target selection ranges.
+- ✅ **P2.1** Done (prior session): the stdlib path now goes through
+  `resolveModuleFile()` (doc 02 §A) — fixes cross-file def for all
+  relocated stdlib modules + user modules.
+- ⬜ **P2.2** Not done — still returns a plain `Location`, not
+  `LocationLink` (no `originSelectionRange`/separate `targetRange`).
+- ✅ **P2.3** Done (2026-09-15): `textDocument/declaration` reuses
+  `doDefinition()` verbatim. Correct for every symbol kind resolved
+  today; no extern-specific special case exists yet (nothing to special-
+  case against, since `declaration`/`definition` are identical for every
+  kind the LSP currently resolves).
+- ✅ **P2.4** Done (2026-09-15): `SemanticQuery::getTypeDefinitionLoc()` +
+  a new `TypeDeclIndexVisitor` (walks the current file's struct/enum
+  decls plus every transitively-imported module's, via each
+  `ModuleImportExprAST::getBody()` — no re-analysis of the target file
+  needed, contrary to this doc's own speculation above). Verified live
+  cross-file (a `net::TcpConnection`-typed variable correctly opens
+  `lib/std/io/net.tr` at the real struct decl).
+- ⬜ **P2.5** Not done — same-file targets already use `NameLoc`
+  (`getDeclarationLoc()`/`getTypeDefinitionLoc()` both read it), but
+  `LocationLink`'s separate `targetSelectionRange` vs `targetRange`
+  distinction (P2.2) is what this item is really about.
 
 ## Acceptance tests
-- Go-to-def on `io::print` opens `lib/std/io/io.tr` (subfolder!) at the function,
-  proving the path bug is fixed.
-- Go-to-def on a `list` method opens `lib/std/collections/list.tr`.
-- Go-to-def on a user `import`ed local module opens that file.
-- Go-to-def on a local variable jumps within the file to its `mut/immut` decl.
-- `typeDefinition` on a `Point` variable opens the `struct Point` decl.
-- Go-to-def on `assert` (builtin) returns nothing gracefully.
+- ✅ Go-to-def on `io::print` opens `lib/std/io/io.tr` (subfolder!) at the
+  function — covered by the prior session's `ResolveModuleFile()` fix.
+- ✅ Go-to-def on a `list`/`net` method or type opens the right subfolder
+  file — same fix; typeDefinition additionally verified on `net::TcpConnection`.
+- ✅ Go-to-def on a user `import`ed local module opens that file (`ResolveModuleFile()`
+  checks the importing file's own directory).
+- ✅ Go-to-def on a local variable jumps within the file to its `mut/immut` decl
+  — verified live, byte-identical between `declaration` and `definition`.
+- ✅ `typeDefinition` on a `Point` variable opens the `struct Point` decl —
+  verified live, same-file case.
+- ⬜ Go-to-def on `assert` (builtin) returns nothing gracefully — not
+  re-verified this session (pre-existing `DeclLoc.Line > 0` guard should
+  already cover it; not re-tested).
 - Def target in a file containing multibyte chars lands on the right column.
