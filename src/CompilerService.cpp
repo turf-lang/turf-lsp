@@ -6,11 +6,8 @@
 #include "Errors.h"
 #include "SymbolTable.h"
 #include <iostream>
-#include <fstream>
+#include <sstream>
 #include <cstring>
-#include <chrono>
-#include <llvm/Support/Path.h>
-#include <llvm/ADT/SmallString.h>
 
 CompilerService::CompilerService() {
     // Required, one-time global setup the parser depends on -- main.cpp's own
@@ -61,66 +58,35 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
     // removed struct's old entry lingering forever across edits.
     InitializeSymbolTable();
 
-    // Write the buffer to a temp file NEXT TO the real source file (not a
-    // single shared /tmp path) so relative `import`s resolve correctly --
-    // one of ParseImport()'s search paths is "the importing source file's
-    // own directory" (docs/architecture/modules_and_scope_resolution.md
-    // §2.4), which only works if the file we hand the parser actually lives
-    // where the user's project thinks it does. Falls back to the system
-    // temp dir if the real directory isn't writable (e.g. an unsaved/
-    // untitled buffer) or has no directory component at all.
-    std::string realPath(filename);
-    llvm::SmallString<256> tempPathBuf;
-    {
-        llvm::StringRef dir = llvm::sys::path::parent_path(realPath);
-        llvm::StringRef base = llvm::sys::path::filename(realPath);
-        std::string baseName = base.empty() ? std::string("buffer.tr") : base.str();
-        if (!dir.empty()) {
-            tempPathBuf = dir;
-        } else {
-            llvm::sys::path::system_temp_directory(true, tempPathBuf);
-        }
-        llvm::sys::path::append(tempPathBuf, "." + baseName + ".turf-lsp-tmp");
-    }
-    std::string tempFile = tempPathBuf.str().str();
-    {
-        std::ofstream out(tempFile, std::ios::trunc);
-        out << source;
-        if (!out) {
-            // Directory wasn't writable after all -- fall back to a system
-            // temp path so analysis can still proceed (relative imports in
-            // this document just won't resolve).
-            llvm::SmallString<256> fallback;
-            llvm::sys::path::system_temp_directory(true, fallback);
-            auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-            llvm::sys::path::append(fallback, "turf_lsp_" + std::to_string(stamp) + ".tr");
-            tempFile = fallback.str().str();
-            std::ofstream retry(tempFile, std::ios::trunc);
-            retry << source;
-        }
-    }
-
-    std::ifstream file(tempFile);
-    std::ifstream* oldFile = SourceFile;
-    SourceFile = &file;
+    // Point the lexer directly at the buffer via SetSourceBuffer() (added
+    // for exactly this -- "an LSP's unsaved editor buffer", see its doc
+    // comment in Lexer.h / issue #232) instead of round-tripping through a
+    // real temp file on disk next to the user's source, the previous
+    // approach. gettok() only ever calls ->get()/->peek() on SourceFile, so
+    // an in-memory std::istringstream works identically to a real ifstream.
+    // sourceBuffer must outlive every SourceFile read below, so it's a local
+    // in this call frame, not a temporary.
+    std::istringstream sourceBuffer{std::string(source)};
+    std::istream* oldFile = SourceFile;
+    SetSourceBuffer(sourceBuffer);
 
     SourceLines.clear();
     {
-        std::ifstream fileLines(tempFile);
+        std::istringstream lineScanner{std::string(source)};
         std::string Line;
-        while (std::getline(fileLines, Line)) {
+        while (std::getline(lineScanner, Line)) {
             SourceLines.push_back(Line);
         }
     }
     std::string oldSourceFilename = SourceFilename;
-    // The real filename is what diagnostics/hover should attribute locations
-    // to; the temp file only exists so the parser's own relative-import
-    // search (which walks llvm::sys::path::parent_path(SourceFilename))
-    // lands in the right directory. Both share the same parent directory by
-    // construction above, so using the temp path here doesn't change import
-    // resolution at all versus using the real path directly -- it just keeps
-    // us from ever opening/writing the user's real file from the LSP.
-    SourceFilename = tempFile;
+    // Import resolution only needs SourceFilename's PARENT DIRECTORY
+    // (relative `import`s search it -- docs/architecture/
+    // modules_and_scope_resolution.md §2.4); it no longer needs to exist on
+    // disk at all now that content comes from SetSourceBuffer() above, not
+    // from opening this path. The real filename can be used directly: no
+    // temp-file naming/fallback dance, and diagnostics/hover attribute to
+    // the real path with zero extra bookkeeping.
+    SourceFilename = std::string(filename);
     AllSourceLines[SourceFilename] = SourceLines;
 
     // Save/restore the recovery jump buffer and flag around this whole call
@@ -211,8 +177,6 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
         };
         analysis->diagnostics.push_back(lspDiag);
     }
-
-    std::remove(tempFile.c_str());
 
     return analysis;
 }
