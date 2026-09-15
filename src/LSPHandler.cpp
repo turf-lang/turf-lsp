@@ -1,12 +1,9 @@
 #include "LSPHandler.hpp"
 #include "SemanticQuery.hpp"
+#include "Parser.h"
 #include <iostream>
 #include <string>
 #include <cctype>
-#include <llvm/Support/Path.h>
-#include <llvm/ADT/SmallString.h>
-
-extern std::string CompilerExecutablePath;
 
 LSPHandler::LSPHandler() : m_shutdownRequested(false) {}
 
@@ -351,22 +348,40 @@ void LSPHandler::handleDefinition(const json& request) {
             auto declLocOpt = SemanticQuery::getDeclarationLoc(node);
             if (declLocOpt && declLocOpt->loc.Line > 0) { // Valid location
                 std::string targetUri = uri;
+                bool haveTarget = true;
 
-                // If it's a standard library module, resolve cross-file!
+                // Cross-file: resolve the declaring module's name to its real
+                // on-disk file the same way a real `import` would -- NOT a
+                // hardcoded flat `lib/std/<name>.tr` path, which broke the
+                // moment stdlib modules were reorganized into subfolders
+                // (e.g. `net` now lives at `lib/std/io/net.tr`). Works for
+                // both stdlib and installed-package modules, since
+                // ResolveModuleFile() shares its search order with the
+                // compiler's own import resolution. If resolution fails,
+                // declLocOpt->loc is meaningless against `uri` (it's a
+                // line/col in the UNRESOLVED target file, not this document)
+                // -- report no location at all rather than point at the
+                // wrong file/line.
                 if (!declLocOpt->moduleName.empty()) {
-                    llvm::SmallString<128> StdlibPath(CompilerExecutablePath);
-                    llvm::sys::path::remove_filename(StdlibPath);
-                    llvm::sys::path::append(StdlibPath, "..", "lib", "std", declLocOpt->moduleName + ".tr");
-                    targetUri = "file://" + StdlibPath.str().str();
+                    std::string docPath = uri;
+                    if (docPath.find("file://") == 0) docPath = docPath.substr(7);
+                    std::string resolved = ResolveModuleFile(declLocOpt->moduleName, docPath);
+                    if (!resolved.empty()) {
+                        targetUri = "file://" + resolved;
+                    } else {
+                        haveTarget = false;
+                    }
                 }
 
-                result = {
-                    {"uri", targetUri},
-                    {"range", {
-                        {"start", {{"line", declLocOpt->loc.Line - 1}, {"character", declLocOpt->loc.Col - 1}}},
-                        {"end", {{"line", declLocOpt->loc.Line - 1}, {"character", declLocOpt->loc.Col}}}
-                    }}
-                };
+                if (haveTarget) {
+                    result = {
+                        {"uri", targetUri},
+                        {"range", {
+                            {"start", {{"line", declLocOpt->loc.Line - 1}, {"character", declLocOpt->loc.Col - 1}}},
+                            {"end", {{"line", declLocOpt->loc.Line - 1}, {"character", declLocOpt->loc.Col}}}
+                        }}
+                    };
+                }
             }
         }
     }
