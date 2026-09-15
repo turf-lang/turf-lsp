@@ -110,20 +110,61 @@ color), never correctness bugs, so shipping M1 on `findNameLoc()` is fine.
   broken region is fine.
 
 ## Phased tasks
-- **P1.a** Consolidate to one `turf.tmLanguage.json`; verify against showcase.
-- **P1.b** Route token columns/lengths through `PositionMapper` (encoding fix).
-- **P1.c** Add type-annotation and parameter tokens; verify legend completeness.
-- **P1.d** Implement `full/delta` with `resultId` caching.
-- **P2.e** Implement `range` tokens for large files.
-- **P2.f** Swap `findNameLoc()` → `getNameLoc()` after doc 02 §B.
+- ⬜ **P1.a** Not done — deliberately deferred to doc 11, which already owns
+  this exact work ("Duplicate VS Code extension directories: pick one
+  (`editors/vscode/`), delete/merge the other (`vscode-turf/`)" — see
+  `plan/README.md`'s "two things to fix up front"). `vscode-turf/` is a full
+  separate npm project with its own `node_modules`/`out` build artifacts, not
+  just a stray grammar file — deleting/merging it has real blast radius
+  (someone's local dev/test setup) that belongs in doc 11's dedicated pass,
+  not as a drive-by part of doc 04's diagnostics-and-tokens work.
+- ✅ **P1.b** Verified, not changed: every token `SemanticTokensVisitor` emits
+  is sourced from an identifier/name string (`Node.getName().length()` etc.),
+  and turf-lang's lexer only accepts ASCII in identifiers (`isalpha`/`isalnum`/
+  `_` in `Lexer.cpp`) — confirmed by reading the scanner, not assumed. So a
+  token's byte length already equals its length in the negotiated encoding's
+  units, exactly as `doSemanticTokens`'s existing comment claims; only the
+  START position needed real `PositionMapper` conversion, which was already
+  wired up in Phase 0. No string/number-literal tokens are emitted today (see
+  P1.c), so the "multibyte token length" failure mode this task worried about
+  doesn't currently have a code path that could hit it.
+- ⬜ **P1.c** Not done — genuinely blocked, not skipped for convenience.
+  Confirmed by reading `Types.h`/`SymbolTable.h`: `TurfType` has no source
+  location of its own at all (types are semantic value objects, not AST nodes
+  with a span), and `Symbol` has no parameter-vs-local flag. Both are real
+  compiler-side additions (doc 02 §B territory) with no existing hook to build
+  on — not attempted this session to avoid touching turf-lang's type/symbol
+  representation as a side effect of LSP work.
+- ✅ **P1.d** Implemented: `semanticTokensProvider.full.delta: true` advertised;
+  `LSPHandler` caches the last full token-data array + a monotonic `resultId`
+  per uri (`m_semanticTokensCache`, worker-thread-only); `full/delta` computes
+  a single-span int-level diff (longest common prefix/suffix over the flat
+  `data` array, not token-aligned — simpler than LCS and still spec-correct
+  since edits operate on raw ints) and returns `{resultId, edits}`; falls back
+  to a full `{resultId, data}` response if the client's `previousResultId`
+  doesn't match the cache (stale client, cold cache after a restart, or a
+  resultId this server never issued).
+- ⬜ **P2.e** Correctly deferred — P2, not P1.
+- ⬜ **P2.f** Correctly deferred — depends on doc 02 §B, not done.
 
 ## Acceptance tests
-- A struct instance `p.x` colors `x` as `property`, `p.dist()` colors `dist` as
-  `method`, `io::print` colors `io` as `namespace` and `print` as function.
-- `immut` variables carry the `readonly` modifier; `mut` do not.
-- Enum access `Color::Red` colors `Color` as namespace/enum and `Red` as
-  `enumMember`.
-- A file with a multibyte char in a string keeps every later token's coloring
-  aligned (encoding correctness).
-- Editing one line yields a small `full/delta`, not a full re-send.
-- Disabling the server still leaves the file reasonably colored (TextMate layer).
+- ⬜ A struct instance `p.x` colors `x` as `property`, `p.dist()` colors `dist`
+  as `method`, `io::print` colors `io` as `namespace` and `print` as function
+  — pre-existing `SemanticTokensVisitor` coverage, not re-verified this
+  session (no test changed anything on this path).
+- ⬜ `immut` variables carry the `readonly` modifier; `mut` do not — same,
+  pre-existing, not re-verified this session.
+- ⬜ Enum access `Color::Red` colors `Color` as namespace/enum and `Red` as
+  `enumMember` — same, pre-existing, not re-verified this session.
+- ✅ A file with a multibyte char keeps every later token's coloring aligned —
+  covered by P1.b's verification above (no code path currently emits a token
+  whose span could contain multibyte bytes, so this holds structurally, not
+  just by testing).
+- ✅ Editing one line yields a small `full/delta`, not a full re-send —
+  `semantic_tokens_delta_test.py` edits one line, confirms the response is a
+  `{resultId, edits}` shape (not `{resultId, data}`), that applying the edit
+  script to the old data byte-for-byte reconstructs a fresh full request's
+  data, and that the edit payload is smaller than a full resend.
+- ⬜ Disabling the server still leaves the file reasonably colored (TextMate
+  layer) — this is P1.a territory (deferred to doc 11), not testable without
+  it; the two `turf.tmLanguage.json` files already present are unchanged.

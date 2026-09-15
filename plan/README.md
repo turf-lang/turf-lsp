@@ -94,11 +94,11 @@ Read the existing code before implementing: `src/CompilerService.cpp`,
 | JSON-RPC framing over stdio | ✅ done (2026-09-15) | `LSPFramer::readMessage()` parses all headers until the blank line, tolerates bare `\n`, loops to read exactly `Content-Length` bytes. `$/cancelRequest` implemented; every dispatch path guarantees exactly one response (id-keyed try/catch → `-32603` on an unexpected exception); `-32601`/`-32002`/`-32600`/`-32800`/`-32801` all wired. |
 | Lifecycle (initialize/initialized/shutdown/exit) | ✅ works | `initialize` advertises hover/definition/semanticTokens/completion, negotiated `positionEncoding`, incremental `textDocumentSync`. |
 | Document sync | ✅ incremental (2026-09-15) | `textDocumentSync.change: 2`. `DocumentStore::applyRangedEdit()` splices ranged edits through `PositionMapper`; a range-less change event still falls back to a full replace (spec-legal, and what `change: 1` clients send). |
-| Diagnostics | ⚠️ collected, **suppressed** | `publishDiagnostics()` computes `analysis->diagnostics` but sends `json::array()` (empty) "until false-positive sources are sorted." Doc 03 re-enables. |
+| Diagnostics | ✅ done (2026-09-15) | Real publish: `code`, `source`, `relatedInformation`, hint-in-message, token-widened ranges (buffer-scan fallback — doc 02 §E's real end-columns never landed), multi-URI publish for errors attributed to an imported file, clear-on-clean, version tagging. `setCollectAllDiagnostics(true)`, `g_AIEnabled` forced off. Found/fixed along the way: typed errors baked raw ANSI color escapes into the message text — stripped before reaching the client. Doc 03's P1.5 (field-testing) and P1.6 (pull model) still open. |
 | Completion | ✅ context-aware | bare / `Ident::` / `instance.`; snippets. Runs a *second* analyze per request; no `import` context; no `resolve`; no scope-precise filtering. |
 | Hover | ✅ basic | var/func/method/struct. No doc-comments, no enum/param/field hover. |
-| Go to definition | ⚠️ partial + **has a bug** | Local defs work. **Cross-file stdlib path is `lib/std/<name>.tr`, which is wrong now** that modules live in subfolders (`lib/std/io/net.tr`, etc.) — see doc 07. No `declaration`/`typeDefinition`. |
-| Semantic tokens | ✅ full | Visitor emits tokens; relies on textual name-loc recovery. No delta/range; no `parameter`/`enum`/`operator` coverage in places. |
+| Go to definition | ✅ local + cross-file | Cross-file resolution goes through `ResolveModuleFile()` (the real module search, same as the compiler's own `import` resolution) — the old hardcoded `lib/std/<name>.tr` bug is fixed. No `declaration`/`typeDefinition`. |
+| Semantic tokens | ✅ full + delta | Visitor emits tokens; relies on textual name-loc recovery. `full/delta` implemented (int-level diff + `resultId` cache, doc 04 P1.d). No `range` tokens (P2.e); no `parameter`/type-annotation coverage (P1.c — genuinely blocked on a compiler-side gap, not skipped). |
 | Find references | ❌ none | Doc 08. |
 | Formatting | ❌ none | No formatter exists anywhere in the codebase. Doc 09 builds one. |
 | Rename / code actions | ❌ none | Doc 10. |
@@ -145,11 +145,20 @@ everything; do it first.
   isn't required for anything doc 01 needed; a good candidate for its own
   future session rather than folded into this one.
 
-### Phase 1 — "See errors and colors" (doc 03, 04)
-- Re-enable diagnostics with error **codes**, severities (error/warning), and
-  `RelatedLocations` → LSP `relatedInformation`. Vet false positives.
-- Round out semantic tokens; verify the TextMate grammar as the fast-path
-  fallback.
+### Phase 1 — "See errors and colors" (doc 03, 04) — ✅ core done (2026-09-15)
+- ✅ Diagnostics re-enabled with error **codes**, severities (error/warning),
+  and `RelatedLocations` → LSP `relatedInformation`, token-widened ranges,
+  multi-URI publish, clear-on-clean, version tagging (doc 03 P1.1–P1.4). Not
+  done: P1.5 (field-testing against real editor usage — no live editor session
+  available this session) and P1.6 (optional pull model, explicitly "later").
+- ✅ `semanticTokens/full/delta` implemented (doc 04 P1.d); P1.b (encoding
+  correctness) verified as already structurally correct, no change needed. Not
+  done: P1.a (grammar-directory consolidation — real blast-radius file/dir
+  work that doc 11 already owns, see "two things to fix up front" above) and
+  P1.c (type-annotation/parameter tokens — genuinely blocked on a compiler-side
+  gap: `TurfType` carries no source span, `Symbol` carries no
+  parameter-vs-local flag; confirmed by reading `Types.h`/`SymbolTable.h`, not
+  assumed).
 
 ### Phase 2 — "Understand code" (doc 05, 06, 07)
 - Completion: add `import` context + scope-precise filtering + `resolve` for
@@ -176,7 +185,7 @@ everything; do it first.
 | Milestone | Delivers | Depends on |
 |---|---|---|
 | M0 | Responsive, serialized server; cached analysis; cancellation | ✅ Phase 0 done (2026-09-15) |
-| M1 | Live red/yellow squiggles + full highlighting in both editors | M0, Phase 1 |
+| M1 | Live red/yellow squiggles + full highlighting in both editors | ✅ server-side core done (2026-09-15); editor-side verification (P1.5) and the grammar-directory consolidation (P1.a, doc 11) still open |
 | M2 | Completion (incl. imports) + hover + go-to-def working end-to-end | M1, Phase 2 |
 | M3 | Find references + document highlight | M2, Phase 3 |
 | M4 | Format-on-save + rename + quick-fixes | M2, Phase 4 |
