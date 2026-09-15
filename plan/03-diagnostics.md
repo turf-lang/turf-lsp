@@ -135,6 +135,21 @@ Each diagnostic with a known `Code` can carry an associated code action (doc 10)
 field is the join key. Plan the mapping table in doc 10; diagnostics just need to
 emit the `code` faithfully (done via mapping above).
 
+## Known gap, found 2026-09-16 (while testing doc 10's code actions), not fixed
+`CompilerService::analyze()` runs Lexer → Parser → Resolver → TypeChecker and
+stops -- by design, the LSP never invokes Codegen. But the CFG-based lint
+warnings (`UnusedVariableWarning`, dead-store, infinite-recursion, etc.) all
+live in `Analysis.cpp`'s passes (`LivenessAnalysisPass` and siblings), which
+are invoked from the Codegen path in `main.cpp`, not from Resolve/TypeCheck.
+Consequence: **this entire class of warning never reaches
+`publishDiagnostics`** -- confirmed live, a genuinely unused local variable
+produces an empty diagnostics array through a real `didOpen`, while the
+identical source reproduces the warning correctly through `turf --typecheck`.
+Fixing this means extracting the CFG analysis passes into something callable
+independently of full Codegen (a doc 02-style turf-lang change) -- out of
+scope for whichever doc happens to notice it next; recorded here since this is
+the diagnostics-publishing doc, not because doc 03's own work caused it.
+
 ## Edge cases
 - Diagnostic at EOF / empty buffer → clamp range into valid bounds via
   `PositionMapper`.

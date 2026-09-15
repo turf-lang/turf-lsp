@@ -219,10 +219,18 @@ everything; do it first.
   keyword rejection, and the stdlib guard (refuses renaming a real
   stdlib function). Not done: the "would newName collide with an
   existing visible declaration" conflict check.
-- ⬜ Code actions not started at all -- a genuinely separate feature
-  surface (new response type, a full `E0NN`-to-quick-fix mapping table,
-  real extract-variable refactoring logic) deliberately left for a
-  dedicated future pass rather than a rushed partial attempt.
+- ✅/⬜ Code actions: 2 quick-fixes shipped (2026-09-16) -- "add import"
+  (E032, verified end-to-end: applying it makes a real broken file
+  compile) and "prefix unused var with underscore" (logic verified via
+  a synthetic diagnostic -- see the found-but-unfixed gap below for
+  why). Not done: the full `E0NN`-to-quick-fix table, did-you-mean,
+  extract-variable, organize-imports.
+- **Found, not fixed** (belongs on doc 03, discovered while testing code
+  actions): `CompilerService::analyze()` never runs the CFG-based lint
+  pass at all (unused-variable/dead-store warnings live in Codegen, a
+  phase the LSP intentionally skips) -- so that whole class of warning
+  never reaches `publishDiagnostics` today, confirmed live against the
+  real `turf` CLI on identical source.
 
 ### Phase 5 — Polish & ship (doc 11, 12)
 - Consolidated VS Code extension published to Marketplace + Open VSX (forks);
@@ -236,7 +244,7 @@ everything; do it first.
 | M1 | Live red/yellow squiggles + full highlighting in both editors | ✅ server-side core done (2026-09-15); editor-side verification (P1.5) and the grammar-directory consolidation (P1.a, doc 11) still open |
 | M2 | Completion (incl. imports) + hover + go-to-def working end-to-end | ✅ done (2026-09-16) |
 | M3 | Find references + document highlight | ✅ core done (2026-09-16) — incremental indexing/`workspace/symbol` still open |
-| M4 | Format-on-save + rename + quick-fixes | ✅ format + rename done (2026-09-16) — quick-fixes/code actions not started |
+| M4 | Format-on-save + rename + quick-fixes | ✅ format + rename + 2 quick-fixes done (2026-09-16) — full quick-fix table/refactors not started |
 | M5 | Published extensions, Neovim client, green CI | all |
 
 ## A note on the turf-lang side

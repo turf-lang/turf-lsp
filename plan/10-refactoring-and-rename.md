@@ -112,19 +112,29 @@ expensive).
   implemented -- needs a real per-scope visibility query this session's
   identity model (declLoc + module) doesn't answer; a genuinely bigger
   feature, not attempted rather than faked.
-- ⬜ **P4.3** Not done -- `E0NN` code enumeration / quick-fix table.
-- ⬜ **P4.4** Not done -- `codeAction` + `codeAction/resolve`.
+- ✅/⬜ **P4.3** Done, scoped to 2 fixes (2026-09-16), not the full 68-code
+  enumeration: "Add import" (E032, a real coded join) and "Prefix
+  unused var with underscore" (message-pattern matched -- warnings never
+  carry a code at all, confirmed by reading `TurfWarning::warn()`).
+- ✅ **P4.4** Done: `codeAction` implemented, computed eagerly (no
+  `codeAction/resolve` needed for either fix -- both are cheap).
 - ⬜ **P4.5** Not done -- extract variable, organize imports.
 - ⬜ **P4.6** Not done (explicitly "later" even in the original plan).
 
-Code actions (P4.3-P4.6) were not started this session at all -- rename
-(P4.1/P4.2) was prioritized as the higher-value, more tractable half of
-this doc (it reuses doc 08's already-built and verified reference
-infrastructure directly); code actions are a genuinely separate feature
-surface (a new response type, a diagnostic-code-to-fix mapping table
-that needs enumerating all 68 `E0NN` codes as its own first task, plus
-real refactoring logic for extract-variable) that deserves its own
-dedicated pass rather than a rushed partial attempt.
+**Real gap found while testing, not fixed (out of scope for this doc,
+belongs on doc 03)**: `CompilerService::analyze()` never runs the
+CFG-based lint pass (`UnusedVariableWarning`, dead-store, etc. -- all in
+`Analysis.cpp`'s `LivenessAnalysisPass`, invoked from Codegen, a phase
+the LSP intentionally never runs). This means `publishDiagnostics` never
+actually surfaces this entire class of warning today, even though the
+real `turf` CLI does. Confirmed live: a genuinely unused variable
+produces an empty diagnostics array through a real `didOpen`, but
+reproduces the warning correctly through `turf --typecheck` on the
+identical source. The "prefix with underscore" quick-fix above is
+correct and tested (via a synthetic diagnostic matching the warning's
+real message format) but is presently unreachable in practice until
+this is fixed -- it will start firing the moment a future session closes
+the gap.
 
 ## Acceptance tests
 - ✅ Rename a function used in 3 files updates all call sites + the def, in one
@@ -138,8 +148,17 @@ dedicated pass rather than a rushed partial attempt.
   declaration at all per doc 07's existing "builtin" handling, and a
   bare `int` type-name use isn't a node kind `getDeclarationLoc()`
   resolves in the first place -- structural, not verified live).
-- ⬜ Quick-fix/did-you-mean/extract-variable acceptance tests -- moot,
-  code actions not implemented this session.
+- ✅ Quick-fix on "unknown module"-shaped error offers "Add `import
+  X;`" and inserts it -- verified live with E032 specifically
+  (`UnqualifiedTypeNotVisibleError`, the closest real analogue to the
+  doc's own "unknown module `io`" example): applying the returned edit
+  makes the file compile cleanly through the real `turf` CLI.
+- ⬜ Did-you-mean quick-fix -- not implemented (the suggestion format has
+  multiple ranked candidates across local/module sources with no single
+  unambiguous replacement to auto-pick; judged too fragile to parse
+  reliably, not attempted rather than shipped fragile).
+- ⬜ Extract-variable acceptance test -- moot, extract-variable not
+  implemented (P4.5).
 - ✅ Rename of a stdlib symbol is refused by default -- verified live on
   a real stdlib function (`net::buildSockAddr`), both `prepareRename`
   (returns null) and `rename` (returns a clear error).
