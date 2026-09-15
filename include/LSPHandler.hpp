@@ -59,6 +59,7 @@ private:
 
     // ---- Request entry points (I/O thread: parse params, enqueue work) ----
     void handleCompletion(const json& request);
+    void handleCompletionResolve(const json& request);
     void handleHover(const json& request);
     void handleDefinition(const json& request);
     // `declaration` reuses doDefinition() verbatim as its work body -- for
@@ -72,6 +73,10 @@ private:
 
     // ---- Work bodies (worker thread only) ----
     void doCompletion(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    // Unlike every other do*(), this one doesn't need a document
+    // position -- it re-derives its target purely from the `data` payload
+    // doCompletion() attached to the item being resolved.
+    void doCompletionResolve(json id, json item, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doHover(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doDefinition(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doTypeDefinition(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);

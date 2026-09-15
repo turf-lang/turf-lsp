@@ -292,6 +292,7 @@ void LSPHandler::dispatch(const json& msg) {
     if (method == "textDocument/didChange") { handleDidChange(msg); return; }
     if (method == "textDocument/didClose") { handleDidClose(msg); return; }
     if (method == "textDocument/completion") { handleCompletion(msg); return; }
+    if (method == "completionItem/resolve") { handleCompletionResolve(msg); return; }
     if (method == "textDocument/hover") { handleHover(msg); return; }
     if (method == "textDocument/definition") { handleDefinition(msg); return; }
     if (method == "textDocument/declaration") { handleDeclaration(msg); return; }
@@ -358,7 +359,7 @@ void LSPHandler::handleInitialize(const json& request) {
                 {"full", {{"delta", true}}}
             }},
             {"completionProvider", {
-                {"resolveProvider", false},
+                {"resolveProvider", true},
                 {"triggerCharacters", {".", ":"}}
             }}
             // Add more capabilities here as they are implemented
@@ -498,6 +499,18 @@ void LSPHandler::handleCompletion(const json& request) {
 
     auto cancelFlag = registerCancellable(id);
     enqueueWork([this, id, uri, pos, cancelFlag]() { doCompletion(id, uri, pos, cancelFlag); });
+}
+
+void LSPHandler::handleCompletionResolve(const json& request) {
+    json id = request.value("id", json(nullptr));
+    // Unlike every other request here, `params` for completionItem/resolve
+    // IS the CompletionItem itself (per spec), not a textDocument/position
+    // wrapper -- passed straight through to the worker, which reads back
+    // out of it exactly what doCompletion() put into its `data` field.
+    json item = request.value("params", json::object());
+
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, item, cancelFlag]() { doCompletionResolve(id, item, cancelFlag); });
 }
 
 void LSPHandler::handleHover(const json& request) {
@@ -1138,11 +1151,71 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
                 lspItem["insertText"] = item.insertSnippet;
                 lspItem["insertTextFormat"] = 2; // Snippet
             }
+            // doc 05 G4: carries just enough to re-resolve this exact
+            // symbol later, without eagerly paying for the doc-comment
+            // file read every item in a (possibly large) list would cost.
+            // Omitted entirely for items with nothing to resolve (keywords,
+            // types, locals, ...) so the client never bothers asking.
+            if (!item.resolveName.empty()) {
+                lspItem["data"] = {{"uri", uri}, {"name", item.resolveName}, {"module", item.resolveModule}};
+            }
             items.push_back(std::move(lspItem));
         }
     }
 
     sendResponse(id, {{"isIncomplete", false}, {"items", items}});
+}
+
+// doc 05 G4: fills in `documentation` (the function/method's doc-comment)
+// on a single completion item, lazily -- doCompletion() deliberately never
+// pays for this eagerly (an extra source scan, possibly a cross-file disk
+// read, per item in a list that can have dozens of entries). Returns
+// `item` completely unmodified if its `data` is missing/malformed, or if
+// the name no longer resolves (the document changed between the original
+// completion request and this one) -- a resolve response must be a
+// complete CompletionItem, so silently dropping fields on failure would be
+// wrong; returning the original item verbatim is the correct "nothing to
+// add" behavior.
+void LSPHandler::doCompletionResolve(json id, json item, std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+
+    if (!item.contains("data") || !item["data"].is_object()) { sendResponse(id, item); return; }
+    std::string uri = item["data"].value("uri", "");
+    std::string name = item["data"].value("name", "");
+    std::string module = item["data"].value("module", "");
+    if (uri.empty() || name.empty() || !m_documents.contains(uri)) { sendResponse(id, item); return; }
+
+    auto analysis = ensureFreshAnalysis(uri, cancelled);
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!analysis) { sendResponse(id, item); return; }
+
+    auto declLocOpt = SemanticQuery::getFunctionDeclLoc(*analysis, name, module);
+    if (!declLocOpt || declLocOpt->loc.Line <= 0) { sendResponse(id, item); return; }
+
+    // Same same-file-vs-cross-file doc-comment strategy doHover() uses.
+    std::string docComment;
+    if (module.empty()) {
+        auto textSnap = m_documents.getText(uri);
+        if (textSnap) docComment = readLeadingDocComment(splitLines(textSnap->text), declLocOpt->loc.Line);
+    } else {
+        std::string resolved = ResolveModuleFile(module, uriToPath(uri));
+        if (!resolved.empty()) {
+            std::ifstream targetFile(resolved);
+            if (targetFile) {
+                std::stringstream buf;
+                buf << targetFile.rdbuf();
+                docComment = readLeadingDocComment(splitLines(buf.str()), declLocOpt->loc.Line);
+            }
+        }
+    }
+    if (!docComment.empty()) {
+        item["documentation"] = {{"kind", "markdown"}, {"value", docComment}};
+    }
+    sendResponse(id, item);
 }
 
 void LSPHandler::sendMessage(const json& message) {

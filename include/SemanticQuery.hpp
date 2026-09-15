@@ -21,6 +21,15 @@ struct CompletionItem {
     // insertTextFormat=2 (Snippet, e.g. "method(${1:arg})$0") instead of a
     // plain-text insertion of `label`.
     std::string insertSnippet;
+    // doc 05 G4 (completionItem/resolve): the flat symbol-table name to
+    // re-look-up on resolve (e.g. "printline", "Point.distance" -- the same
+    // key structMethods()/firstOverload() already use), and its owning
+    // module ("" = current file). Empty `resolveName` means this item has
+    // nothing worth resolving lazily (a keyword, a type name, a local
+    // variable, ...) -- LSPHandler omits the `data` field entirely for
+    // those, so the client never sends a resolve request for them.
+    std::string resolveName;
+    std::string resolveModule;
 };
 
 enum class SemanticTokenType {
@@ -94,6 +103,16 @@ public:
     // shape as getDeclarationLoc(), for the caller to resolve a target URI.
     static std::optional<SymbolLocation> getTypeDefinitionLoc(const DocumentAnalysis& analysis,
                                                                const ExprAST* node);
+
+    // completionItem/resolve support (doc 05 G4): looks up the declaration
+    // site of a function/method by its flat symbol-table name (e.g.
+    // "printline" or "Point.distance" -- CompletionItem::resolveName) and
+    // owning module ("" = current file, matching resolveModule). Returns
+    // nullopt if the name no longer resolves (the document changed between
+    // the original completion request and the client's resolve request).
+    static std::optional<SymbolLocation> getFunctionDeclLoc(const DocumentAnalysis& analysis,
+                                                             const std::string& name,
+                                                             const std::string& module);
 
     // Formats a hover tooltip (+ its own source range) for the symbol
     // referenced by `node`. `cursorLine`/`cursorCol` (1-indexed, same as

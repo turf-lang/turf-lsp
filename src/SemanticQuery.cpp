@@ -959,6 +959,8 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
                     item.kind = 3; // Function
                     item.detail = sym->signature();
                     item.insertSnippet = buildCallSnippet(name, *sym, false);
+                    item.resolveName = name;
+                    item.resolveModule = base;
                     items.push_back(std::move(item));
                 }
             }
@@ -991,6 +993,8 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
                 item.kind = 2; // Method (static)
                 item.detail = sym ? sym->signature() : (base + "." + method + "()");
                 item.insertSnippet = sym ? buildCallSnippet(method, *sym, false) : (method + "()$0");
+                item.resolveName = base + "." + method; // structMethods()'s flat symbol-table key
+                item.resolveModule = owner;
                 items.push_back(std::move(item));
             }
         }
@@ -1028,6 +1032,8 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
             item.kind = 2; // Method
             item.detail = sym->signature();
             item.insertSnippet = buildCallSnippet(method, *sym, true);
+            item.resolveName = structName + "." + method;
+            item.resolveModule = owner;
             items.push_back(std::move(item));
         }
         return items;
@@ -1065,6 +1071,8 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
             item.kind = 3;
             item.detail = sym->signature();
             item.insertSnippet = buildCallSnippet(name, *sym, false);
+            item.resolveName = name;
+            // resolveModule left "" -- current-file function.
             items.push_back(std::move(item));
         }
     }
@@ -1072,4 +1080,14 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
     for (const auto& name : symTable.getAllEnumNames()) items.push_back({name, 22, "enum", ""});
 
     return items;
+}
+
+std::optional<SymbolLocation> SemanticQuery::getFunctionDeclLoc(const DocumentAnalysis& analysis,
+                                                                 const std::string& name,
+                                                                 const std::string& module) {
+    if (!analysis.resolver) return std::nullopt;
+    if (auto sym = firstOverload(analysis.resolver->symbolTable(), name, module)) {
+        return SymbolLocation{sym->DeclLoc, module, bareNameLength(sym->BaseName)};
+    }
+    return std::nullopt;
 }
