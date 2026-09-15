@@ -2,6 +2,7 @@
 #include "SemanticQuery.hpp"
 #include "Logger.hpp"
 #include "Parser.h"
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
@@ -297,6 +298,9 @@ void LSPHandler::dispatch(const json& msg) {
     if (method == "textDocument/definition") { handleDefinition(msg); return; }
     if (method == "textDocument/declaration") { handleDeclaration(msg); return; }
     if (method == "textDocument/typeDefinition") { handleTypeDefinition(msg); return; }
+    if (method == "textDocument/documentHighlight") { handleDocumentHighlight(msg); return; }
+    if (method == "textDocument/references") { handleReferences(msg); return; }
+    if (method == "textDocument/documentSymbol") { handleDocumentSymbol(msg); return; }
     if (method == "textDocument/semanticTokens/full") { handleSemanticTokens(msg); return; }
     if (method == "textDocument/semanticTokens/full/delta") { handleSemanticTokensDelta(msg); return; }
 
@@ -351,6 +355,9 @@ void LSPHandler::handleInitialize(const json& request) {
             {"definitionProvider", true},
             {"declarationProvider", true},
             {"typeDefinitionProvider", true},
+            {"documentHighlightProvider", true},
+            {"referencesProvider", true},
+            {"documentSymbolProvider", true},
             {"semanticTokensProvider", {
                 {"legend", {
                     {"tokenTypes", {"variable", "function", "keyword", "type", "parameter", "struct", "string", "number", "operator", "namespace", "property", "enumMember", "method"}},
@@ -558,6 +565,40 @@ void LSPHandler::handleTypeDefinition(const json& request) {
 
     auto cancelFlag = registerCancellable(id);
     enqueueWork([this, id, uri, pos, cancelFlag]() { doTypeDefinition(id, uri, pos, cancelFlag); });
+}
+
+void LSPHandler::handleDocumentHighlight(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    auto position = params.value("position", json::object());
+    LspPosition pos{position.value("line", 0), position.value("character", 0)};
+
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, pos, cancelFlag]() { doDocumentHighlight(id, uri, pos, cancelFlag); });
+}
+
+void LSPHandler::handleReferences(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    auto position = params.value("position", json::object());
+    LspPosition pos{position.value("line", 0), position.value("character", 0)};
+    bool includeDeclaration = params.value("context", json::object()).value("includeDeclaration", true);
+
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, pos, includeDeclaration, cancelFlag]() {
+        doReferences(id, uri, pos, includeDeclaration, cancelFlag);
+    });
+}
+
+void LSPHandler::handleDocumentSymbol(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, cancelFlag]() { doDocumentSymbol(id, uri, cancelFlag); });
 }
 
 void LSPHandler::handleSemanticTokens(const json& request) {
@@ -969,6 +1010,204 @@ void LSPHandler::doTypeDefinition(json id, std::string uri, LspPosition pos, std
         }
     }
     sendResponse(id, result);
+}
+
+// doc 08 P3.3: every occurrence of the symbol under the cursor, restricted
+// to the current file -- no workspace scan needed, unlike doReferences()
+// below. Read/Write distinction (doc's own edge case) isn't implemented --
+// every highlight comes back plain (LSP `kind` omitted, which the spec
+// defaults to Text=1), a real scope cut, not an oversight: telling a
+// declaration/use apart from an assignment LHS specifically would need
+// ReferenceVisitor to track one more bit per occurrence that nothing
+// upstream currently computes.
+void LSPHandler::doDocumentHighlight(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!m_documents.contains(uri)) { sendError(id, -32801, "Content modified"); return; }
+
+    auto analysis = ensureFreshAnalysis(uri, cancelled);
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!analysis) { sendResponse(id, nullptr); return; }
+
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) { sendError(id, -32801, "Content modified"); return; }
+
+    PositionMapper mapper(textSnap->text, m_positionEncoding);
+    int compLine, compCol;
+    mapper.toCompilerLineCol(pos, compLine, compCol);
+
+    json result = nullptr;
+    const ExprAST* node = SemanticQuery::findNodeAt(*analysis, compLine, compCol);
+    if (node) {
+        auto target = SemanticQuery::getDeclarationLoc(node);
+        if (target && target->loc.Line > 0) {
+            auto occurrences = SemanticQuery::findAllReferenceOccurrences(*analysis);
+            json highlights = json::array();
+            for (const auto& occ : occurrences) {
+                if (occ.declLoc.Line == target->loc.Line && occ.declLoc.Col == target->loc.Col &&
+                    occ.declModule == target->moduleName) {
+                    highlights.push_back({{"range", jsonRange(mapper.toLspRange(occ.loc.Line, occ.loc.Col, occ.length))}});
+                }
+            }
+            if (!highlights.empty()) result = highlights;
+        }
+    }
+    sendResponse(id, result);
+}
+
+// doc 08 P3.5: workspace-wide references. Scans every file WorkspaceIndex
+// enumerated (doc 01 P0.6) plus the current document, running a completely
+// fresh, independent analyze() on each (never stored back via
+// setAnalysis() -- these aren't the document being edited) and matching
+// occurrences by identity: (declLoc, declModule resolved to an absolute
+// path FROM THAT FILE's own position). No persistent OccurrenceTable /
+// incremental invalidation (doc 08's P3.2/P3.4 as originally scoped) --
+// a full per-request scan instead, which the plan doc itself calls out as
+// "fine for typical project sizes" pending real dogfooding evidence it
+// isn't.
+void LSPHandler::doReferences(json id, std::string uri, LspPosition pos, bool includeDeclaration,
+                               std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!m_documents.contains(uri)) { sendError(id, -32801, "Content modified"); return; }
+
+    auto analysis = ensureFreshAnalysis(uri, cancelled);
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!analysis) { sendResponse(id, nullptr); return; }
+
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) { sendError(id, -32801, "Content modified"); return; }
+
+    PositionMapper mapper(textSnap->text, m_positionEncoding);
+    int compLine, compCol;
+    mapper.toCompilerLineCol(pos, compLine, compCol);
+
+    const ExprAST* node = SemanticQuery::findNodeAt(*analysis, compLine, compCol);
+    if (!node) { sendResponse(id, json::array()); return; }
+    auto target = SemanticQuery::getDeclarationLoc(node);
+    if (!target || target->loc.Line <= 0) { sendResponse(id, json::array()); return; }
+
+    // Resolve the target's own module to an absolute path ONCE, against
+    // the document the reference request originated in -- correct for
+    // every stdlib/usr-package target (steps 1-2 of ResolveModuleFile()'s
+    // search order don't depend on the importing file at all) and for a
+    // same-directory local-module target reached from a file in that same
+    // directory; a target resolved only through some OTHER file's own
+    // relative-directory step is the one case this can disagree with,
+    // accepted as a known edge case rather than re-resolving per scanned
+    // file (which would need each file's own import of the target to
+    // already be known, a chicken-and-egg problem this simpler model
+    // avoids).
+    std::string docPath = uriToPath(uri);
+    std::string targetFilePath = target->moduleName.empty() ? docPath
+                                                              : ResolveModuleFile(target->moduleName, docPath);
+    if (targetFilePath.empty()) { sendResponse(id, json::array()); return; }
+
+    // Scan candidates: every workspace-indexed file, plus the target's own
+    // declaring file and the current document (a target declared in a
+    // file the WorkspaceIndex didn't enumerate -- e.g. outside every
+    // workspace folder, or the index hasn't rescanned yet -- must still be
+    // searched, since it's the one file GUARANTEED to contain at least the
+    // declaration itself).
+    std::vector<std::string> candidates = m_workspaceIndex.files();
+    candidates.push_back(docPath);
+    candidates.push_back(targetFilePath);
+    std::sort(candidates.begin(), candidates.end());
+    candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+
+    json locations = json::array();
+    for (const auto& candidatePath : candidates) {
+        if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+
+        const DocumentAnalysis* candidateAnalysis = nullptr;
+        std::shared_ptr<const DocumentAnalysis> freshAnalysis; // keeps a fresh analyze() alive for this iteration
+        std::string candidateUri = pathToUri(candidatePath);
+        std::string candidateText;
+
+        if (candidatePath == docPath) {
+            candidateAnalysis = analysis.get();
+            candidateText = textSnap->text;
+        } else if (auto openSnap = m_documents.getText(candidateUri)) {
+            // Already open in the editor -- reuse the live buffer's own
+            // fresh analysis instead of re-reading it off disk stale.
+            auto openAnalysis = ensureFreshAnalysis(candidateUri, cancelled);
+            if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+            if (!openAnalysis) continue;
+            freshAnalysis = openAnalysis;
+            candidateAnalysis = openAnalysis.get();
+            candidateText = openSnap->text;
+        } else {
+            std::ifstream f(candidatePath);
+            if (!f) continue;
+            std::stringstream buf;
+            buf << f.rdbuf();
+            candidateText = buf.str();
+            auto analyzed = m_compiler.analyze(candidateText, candidatePath, cancelled);
+            if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+            if (!analyzed) continue;
+            freshAnalysis = std::shared_ptr<const DocumentAnalysis>(std::move(analyzed));
+            candidateAnalysis = freshAnalysis.get();
+        }
+
+        auto occurrences = SemanticQuery::findAllReferenceOccurrences(*candidateAnalysis);
+        if (occurrences.empty()) continue;
+
+        PositionMapper candidateMapper(candidateText, m_positionEncoding);
+        for (const auto& occ : occurrences) {
+            if (occ.declLoc.Line != target->loc.Line || occ.declLoc.Col != target->loc.Col) continue;
+            if (!includeDeclaration && occ.isDeclaration) continue;
+            std::string occDeclFilePath = occ.declModule.empty() ? candidatePath
+                                                                   : ResolveModuleFile(occ.declModule, candidatePath);
+            if (occDeclFilePath != targetFilePath) continue;
+
+            locations.push_back({
+                {"uri", candidateUri},
+                {"range", jsonRange(candidateMapper.toLspRange(occ.loc.Line, occ.loc.Col, occ.length))}
+            });
+        }
+    }
+    sendResponse(id, locations);
+}
+
+// doc 08 P3.6 (bonus): a flat outline of the current file's top-level
+// struct/enum/function declarations as SymbolInformation (the simpler,
+// non-hierarchical DocumentSymbol response variant -- nesting fields/
+// methods under their owning struct is explicitly left for later, this
+// covers the common "jump to a top-level declaration" case cheaply).
+void LSPHandler::doDocumentSymbol(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!m_documents.contains(uri)) { sendError(id, -32801, "Content modified"); return; }
+
+    auto analysis = ensureFreshAnalysis(uri, cancelled);
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!analysis) { sendResponse(id, json::array()); return; }
+
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) { sendError(id, -32801, "Content modified"); return; }
+    PositionMapper mapper(textSnap->text, m_positionEncoding);
+
+    json symbols = json::array();
+    for (const auto& sym : SemanticQuery::getDocumentSymbols(*analysis)) {
+        symbols.push_back({
+            {"name", sym.name},
+            {"kind", sym.kind},
+            {"location", {
+                {"uri", uri},
+                {"range", jsonRange(mapper.toLspRange(sym.loc.Line, sym.loc.Col, std::max(sym.length, 1)))}
+            }}
+        });
+    }
+    sendResponse(id, symbols);
 }
 
 std::vector<int> LSPHandler::computeSemanticTokenData(const DocumentAnalysis& analysis,

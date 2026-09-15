@@ -78,6 +78,16 @@ struct SymbolLocation {
     int length = 1;
 };
 
+// A single top-level declaration for textDocument/documentSymbol (doc 08
+// P3.6). `kind` is an LSP SymbolKind (Function=12, Struct=23, Enum=10,
+// Variable=13) -- LSPHandler forwards it as-is.
+struct DocumentSymbolEntry {
+    std::string name;
+    int kind;
+    SourceLocation loc;
+    int length;
+};
+
 // A hover result: the rendered markdown plus the span of the hovered token
 // itself (doc 06 P2.1's `range`, so the client underlines exactly the
 // symbol rather than nothing). `length` is 0 (never rendered as a range by
@@ -86,6 +96,25 @@ struct HoverInfo {
     std::string markdown;
     SourceLocation loc;
     int length = 0;
+};
+
+// A single occurrence of a symbol (doc 08 -- find references / document
+// highlight). `declLoc`/`declModule` together identify WHICH declaration
+// this occurrence resolves to: locals/params are always `declModule ==
+// ""` (VariableSymbol carries no SourceModule of its own -- a local can
+// only ever be declared in the same file it's used in), while a
+// function/method occurrence carries whatever module the Resolver
+// attributed it to ("" = current file). Comparing two occurrences'
+// identity requires resolving each side's `declModule` to an absolute
+// file path first (via ResolveModuleFile(), against EACH occurrence's
+// OWN containing file as the importing-file context) -- a bare module
+// NAME isn't itself comparable across files, only what it resolves to.
+struct ReferenceOccurrence {
+    SourceLocation loc;
+    int length;
+    bool isDeclaration;
+    ResolverSourceLocation declLoc;
+    std::string declModule;
 };
 
 class SemanticQuery {
@@ -137,6 +166,24 @@ public:
     // are colored at their own getNameLoc() (issue #230), not a preceding
     // keyword/operator's location.
     static std::vector<SemanticToken> getSemanticTokens(const DocumentAnalysis& analysis);
+
+    // Every reference-bearing occurrence (variable use/decl, function
+    // call/def, method call) in `analysis`'s own top-level file --
+    // deliberately NOT recursing into imported-module bodies, same
+    // reasoning SemanticTokensVisitor::visitModuleImport documents (those
+    // positions belong to a different file's coordinate space). Struct/
+    // enum/field/module-name occurrences aren't tracked yet (doc 08 scope
+    // note) -- only the node kinds getDeclarationLoc() already resolves.
+    // Used for both documentHighlight (this file only) and as the
+    // per-file scan step of workspace-wide references.
+    static std::vector<ReferenceOccurrence> findAllReferenceOccurrences(const DocumentAnalysis& analysis);
+
+    // doc 08 P3.6: top-level struct/enum/function declarations in
+    // `analysis`'s own file, for a flat (non-nested) documentSymbol
+    // outline. Skips synthetic prelude imports and anything declared
+    // inside an imported module's body (same "this file only" scoping
+    // findAllReferenceOccurrences() uses).
+    static std::vector<DocumentSymbolEntry> getDocumentSymbols(const DocumentAnalysis& analysis);
 
     // Builds context-aware completion items for a cursor sitting right after
     // `lineTextBeforeCursor` (the current line's text up to, not including,

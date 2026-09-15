@@ -757,6 +757,188 @@ std::vector<SemanticToken> SemanticQuery::getSemanticTokens(const DocumentAnalys
     return tokens;
 }
 
+// ─── References / document highlight (doc 08) ──────────────────────────────
+
+namespace {
+// Collects ReferenceOccurrence for the 5 node kinds getDeclarationLoc()
+// already resolves (variable use/decl, function call/def, method call) --
+// deliberately NOT struct/enum/field/module-name occurrences yet (a real,
+// documented scope limit, not an oversight -- see the header's own note).
+// Traversal skeleton is otherwise identical to SemanticTokensVisitor's
+// (every expression kind needs its own override, or the default no-op
+// ASTVisitor base silently drops everything nested inside it).
+class ReferenceVisitor : public ASTVisitor {
+public:
+    std::vector<ReferenceOccurrence> occurrences;
+
+    void add(const SourceLocation& loc, int length, bool isDecl,
+             const ResolverSourceLocation& declLoc, const std::string& declModule) {
+        if (loc.Line > 0 && length > 0 && declLoc.Line > 0) {
+            occurrences.push_back({loc, length, isDecl, declLoc, declModule});
+        }
+    }
+
+    void visitVariable(VariableExprAST &Node) override {
+        if (auto sym = Node.getResolvedSymbol()) {
+            add(Node.getLoc(), static_cast<int>(Node.getName().length()), false, sym->DeclLoc, "");
+        }
+    }
+
+    void visitVarDecl(VarDeclExprAST &Node) override {
+        if (auto sym = Node.getResolvedSymbol()) {
+            add(Node.getNameLoc(), static_cast<int>(Node.getName().length()), true, sym->DeclLoc, "");
+        }
+        if (Node.getInitializer()) const_cast<ExprAST*>(Node.getInitializer())->accept(*this);
+    }
+
+    void visitFuncDef(FuncDefExprAST &Node) override {
+        if (auto target = Node.getResolvedDef()) {
+            add(Node.getNameLoc(), bareNameLength(Node.getName()), true, target->DeclLoc, target->SourceModule);
+        }
+        if (Node.getBodyMut()) const_cast<ExprAST*>(Node.getBodyMut())->accept(*this);
+    }
+
+    void visitFuncCall(FuncCallExprAST &Node) override {
+        if (auto target = Node.getResolvedCallTarget()) {
+            SourceLocation loc = Node.getLoc();
+            int len = bareNameLength(target->BaseName);
+            // `Module::func(...)`: same special-case hover()/getDeclarationLoc()
+            // already need -- the resolved target lives on the FuncCallExprAST,
+            // not the ScopeAccessExprAST callee, but the visible NAME span is
+            // the callee's right-hand side.
+            if (auto scopeCallee = dynamic_cast<const ScopeAccessExprAST*>(Node.getCallee())) {
+                loc = scopeCallee->getRightLoc();
+                len = static_cast<int>(scopeCallee->getRightName().length());
+            } else if (auto varCallee = dynamic_cast<const VariableExprAST*>(Node.getCallee())) {
+                loc = varCallee->getLoc();
+                len = static_cast<int>(varCallee->getName().length());
+            }
+            add(loc, len, false, target->DeclLoc, target->SourceModule);
+        } else if (Node.getCallee()) {
+            const_cast<ExprAST*>(Node.getCallee())->accept(*this);
+        }
+        for (const auto& arg : Node.getArgs()) {
+            if (arg) const_cast<ExprAST*>(arg.get())->accept(*this);
+        }
+    }
+
+    void visitMethodCall(MethodCallExprAST &Node) override {
+        if (Node.getBase()) const_cast<ExprAST*>(Node.getBase())->accept(*this);
+        if (auto target = Node.getResolvedCallTarget()) {
+            add(Node.getNameLoc(), static_cast<int>(Node.getMethod().length()), false,
+                target->DeclLoc, target->SourceModule);
+        }
+        for (const auto& arg : Node.getArgs()) {
+            if (arg) const_cast<ExprAST*>(arg.get())->accept(*this);
+        }
+    }
+
+    void visitBlock(BlockExprAST &Node) override {
+        for (const auto& expr : Node.getExpressions())
+            if (expr) const_cast<ExprAST*>(expr.get())->accept(*this);
+    }
+    void visitIf(IfExprAST &Node) override {
+        for (const auto& branch : Node.getBranches()) {
+            if (branch.Cond) const_cast<ExprAST*>(branch.Cond.get())->accept(*this);
+            if (branch.Body) const_cast<ExprAST*>(branch.Body.get())->accept(*this);
+        }
+        if (Node.getElseBody()) const_cast<ExprAST*>(Node.getElseBody())->accept(*this);
+    }
+    void visitWhile(WhileExprAST &Node) override {
+        if (Node.getCond()) const_cast<ExprAST*>(Node.getCond())->accept(*this);
+        if (Node.getBody()) const_cast<ExprAST*>(Node.getBody())->accept(*this);
+    }
+    void visitFor(ForExprAST &Node) override {
+        if (Node.getStart()) const_cast<ExprAST*>(Node.getStart())->accept(*this);
+        if (Node.getEnd()) const_cast<ExprAST*>(Node.getEnd())->accept(*this);
+        if (Node.getStep()) const_cast<ExprAST*>(Node.getStep())->accept(*this);
+        if (Node.getBody()) const_cast<ExprAST*>(Node.getBody())->accept(*this);
+    }
+    void visitBinary(BinaryExprAST &Node) override {
+        if (Node.getLHS()) const_cast<ExprAST*>(Node.getLHS())->accept(*this);
+        if (Node.getRHS()) const_cast<ExprAST*>(Node.getRHS())->accept(*this);
+    }
+    void visitAssignment(AssignmentExprAST &Node) override {
+        if (Node.getLHS()) const_cast<ExprAST*>(Node.getLHS())->accept(*this);
+        if (Node.getRHS()) const_cast<ExprAST*>(Node.getRHS())->accept(*this);
+    }
+    void visitCompoundAssignment(CompoundAssignmentExprAST &Node) override {
+        if (Node.getLHS()) const_cast<ExprAST*>(Node.getLHS())->accept(*this);
+        if (Node.getRHS()) const_cast<ExprAST*>(Node.getRHS())->accept(*this);
+    }
+    void visitUnary(UnaryExprAST &Node) override {
+        if (Node.getOperand()) const_cast<ExprAST*>(Node.getOperand())->accept(*this);
+    }
+    void visitAddressOf(AddressOfExprAST &Node) override {
+        if (Node.getOperand()) const_cast<ExprAST*>(Node.getOperand())->accept(*this);
+    }
+    void visitCast(CastExprAST &Node) override {
+        if (Node.getOperand()) const_cast<ExprAST*>(Node.getOperand())->accept(*this);
+    }
+    void visitPostfixExpr(PostfixExprAST &Node) override {
+        if (Node.getOperand()) const_cast<ExprAST*>(Node.getOperand())->accept(*this);
+    }
+    void visitReturn(ReturnExprAST &Node) override {
+        if (Node.getVal()) const_cast<ExprAST*>(Node.getVal())->accept(*this);
+    }
+    void visitCompare(CompareExprAST &Node) override {
+        if (Node.getSubject()) const_cast<ExprAST*>(Node.getSubject())->accept(*this);
+        for (const auto& arm : Node.getArms()) {
+            for (const auto& val : arm.Values)
+                if (val) const_cast<ExprAST*>(val.get())->accept(*this);
+            if (arm.Body) const_cast<ExprAST*>(arm.Body.get())->accept(*this);
+        }
+        if (Node.getOtherBody()) const_cast<ExprAST*>(Node.getOtherBody())->accept(*this);
+    }
+    void visitFieldAccess(FieldAccessExprAST &Node) override {
+        if (Node.getBase()) const_cast<ExprAST*>(Node.getBase())->accept(*this);
+    }
+    void visitArrayDecl(ArrayDeclExprAST &Node) override {
+        for (const auto& elem : Node.getInitList())
+            if (elem) const_cast<ExprAST*>(elem.get())->accept(*this);
+    }
+    void visitArrayLiteral(ArrayLiteralExprAST &Node) override {
+        for (const auto& elem : Node.getElements())
+            if (elem) const_cast<ExprAST*>(elem.get())->accept(*this);
+    }
+    void visitArrayAccess(ArrayAccessExprAST &Node) override {
+        if (Node.getBase()) const_cast<ExprAST*>(Node.getBase())->accept(*this);
+        if (Node.getIndex()) const_cast<ExprAST*>(Node.getIndex())->accept(*this);
+    }
+};
+} // namespace
+
+std::vector<ReferenceOccurrence> SemanticQuery::findAllReferenceOccurrences(const DocumentAnalysis& analysis) {
+    ReferenceVisitor visitor;
+    for (size_t i = analysis.preludeImportCount; i < analysis.asts.size(); ++i) {
+        if (analysis.asts[i]) const_cast<ExprAST*>(analysis.asts[i].get())->accept(visitor);
+    }
+    return std::move(visitor.occurrences);
+}
+
+std::vector<DocumentSymbolEntry> SemanticQuery::getDocumentSymbols(const DocumentAnalysis& analysis) {
+    std::vector<DocumentSymbolEntry> symbols;
+    // Top-level entries only -- analysis.asts IS the file's flat top-level
+    // declaration list, so no AST walk is needed, just a dynamic_cast per
+    // entry (skips anything nested inside a function body by construction).
+    for (size_t i = analysis.preludeImportCount; i < analysis.asts.size(); ++i) {
+        const ExprAST* node = analysis.asts[i].get();
+        if (!node) continue;
+        if (auto structDecl = dynamic_cast<const StructDeclExprAST*>(node)) {
+            symbols.push_back({structDecl->getName(), 23 /* Struct */,
+                               structDecl->getNameLoc(), static_cast<int>(structDecl->getName().length())});
+        } else if (auto enumDecl = dynamic_cast<const EnumDeclExprAST*>(node)) {
+            // getLoc() is the `enum` keyword (see TypeDeclIndexVisitor's
+            // identical note) -- EnumDeclExprAST has no separate NameLoc.
+            symbols.push_back({enumDecl->getName(), 10 /* Enum */, enumDecl->getLoc(), 1});
+        } else if (auto fnDef = dynamic_cast<const FuncDefExprAST*>(node)) {
+            symbols.push_back({fnDef->getName(), 12 /* Function */,
+                               fnDef->getNameLoc(), bareNameLength(fnDef->getName())});
+        }
+    }
+    return symbols;
+}
+
 // ─── Completion ──────────────────────────────────────────────────────────
 
 namespace {
