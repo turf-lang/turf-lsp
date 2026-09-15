@@ -96,8 +96,14 @@ demand.
 - ✅ **P2.1** Done (prior session): the stdlib path now goes through
   `resolveModuleFile()` (doc 02 §A) — fixes cross-file def for all
   relocated stdlib modules + user modules.
-- ⬜ **P2.2** Not done — still returns a plain `Location`, not
-  `LocationLink` (no `originSelectionRange`/separate `targetRange`).
+- ✅ **P2.2** Done (2026-09-15): returns a one-element `LocationLink[]`
+  when the client's `initialize` capabilities declared
+  `textDocument.definition.linkSupport`, else the original plain
+  `Location` (unchanged wire shape for older clients). Carries
+  `originSelectionRange` (reusing hover()'s per-node-kind span) plus
+  `targetRange`/`targetSelectionRange` (same value -- no cheaply-known
+  separate whole-decl range exists, so this is the documented "else"
+  case, not a shortcut).
 - ✅ **P2.3** Done (2026-09-15): `textDocument/declaration` reuses
   `doDefinition()` verbatim. Correct for every symbol kind resolved
   today; no extern-specific special case exists yet (nothing to special-
@@ -110,10 +116,10 @@ demand.
   needed, contrary to this doc's own speculation above). Verified live
   cross-file (a `net::TcpConnection`-typed variable correctly opens
   `lib/std/io/net.tr` at the real struct decl).
-- ⬜ **P2.5** Not done — same-file targets already use `NameLoc`
-  (`getDeclarationLoc()`/`getTypeDefinitionLoc()` both read it), but
-  `LocationLink`'s separate `targetSelectionRange` vs `targetRange`
-  distinction (P2.2) is what this item is really about.
+- ✅ **P2.5** Done (2026-09-15): `SymbolLocation` now carries the real
+  target-name `length` (was a hardcoded 1-char caret), used for both the
+  plain-`Location` and `LocationLink` response shapes, same-file and
+  cross-file.
 
 ## Acceptance tests
 - ✅ Go-to-def on `io::print` opens `lib/std/io/io.tr` (subfolder!) at the
