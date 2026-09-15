@@ -1095,6 +1095,8 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
         size_t lineStartByte = mapper.lineStart(pos.line);
         size_t cursorByte = mapper.toByteOffset(pos);
         std::string prefixText = lineTextUpToByteOffset(textSnap->text, lineStartByte, cursorByte);
+        int compLine, compCol;
+        mapper.toCompilerLineCol(pos, compLine, compCol);
 
         // Try the already-cached (and, since ensureFreshAnalysis self-
         // heals, always up-to-date-or-refreshed) analysis first for an
@@ -1127,7 +1129,7 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
         if (isScopeAccessTrigger) {
             auto analysis = ensureFreshAnalysis(uri, cancelled);
             if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
-            if (analysis) completions = SemanticQuery::getCompletions(*analysis, prefixText);
+            if (analysis) completions = SemanticQuery::getCompletions(*analysis, prefixText, "", compLine);
         }
 
         if (!isScopeAccessTrigger || completions.empty()) {
@@ -1140,7 +1142,7 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
             auto completionAnalysis = m_compiler.analyze(patchedText, path, cancelled);
             if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
             if (completionAnalysis) {
-                completions = SemanticQuery::getCompletions(*completionAnalysis, prefixText, path);
+                completions = SemanticQuery::getCompletions(*completionAnalysis, prefixText, path, compLine);
             }
         }
 
@@ -1151,6 +1153,7 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
                 lspItem["insertText"] = item.insertSnippet;
                 lspItem["insertTextFormat"] = 2; // Snippet
             }
+            if (!item.sortText.empty()) lspItem["sortText"] = item.sortText;
             // doc 05 G4: carries just enough to re-resolve this exact
             // symbol later, without eagerly paying for the doc-comment
             // file read every item in a (possibly large) list would cost.

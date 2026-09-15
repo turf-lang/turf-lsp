@@ -30,6 +30,14 @@ struct CompletionItem {
     // those, so the client never sends a resolve request for them.
     std::string resolveName;
     std::string resolveModule;
+    // doc 05 G3/G6: when non-empty, the client sorts the completion LIST
+    // by this string instead of falling back to `label` -- lets a lower-
+    // priority-but-alphabetically-earlier entry (e.g. a keyword) rank
+    // below a more relevant one (e.g. a local variable) that would
+    // otherwise sort first purely by spelling. Left empty for a context
+    // that's already a small, uniformly-relevant set with no ranking
+    // question worth answering (enum variants, import module names, ...).
+    std::string sortText;
 };
 
 enum class SemanticTokenType {
@@ -141,7 +149,11 @@ public:
     // completed -- used only for Import-context completion (`import
     // <prefix>`), which needs it to resolve sibling `.tr` files next to the
     // document via ListAvailableModules(). Every other trigger kind ignores it.
+    // `cursorLine` (1-indexed, compiler convention; 0 = unknown) drives doc
+    // 05 G3's scope-distance ranking for Bare-word local-variable
+    // suggestions; every other trigger kind ignores it too.
     static std::vector<CompletionItem> getCompletions(const DocumentAnalysis& analysis,
                                                        const std::string& lineTextBeforeCursor,
-                                                       const std::string& documentPath = "");
+                                                       const std::string& documentPath = "",
+                                                       int cursorLine = 0);
 };

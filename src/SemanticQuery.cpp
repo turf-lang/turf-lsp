@@ -3,6 +3,7 @@
 #include "Parser.h" // ListAvailableModules() -- import completion (doc 05 G2)
 #include "Resolver.h"
 #include <cctype>
+#include <cstdio>
 #include <iostream>
 #include <unordered_map>
 #include <utility>
@@ -773,10 +774,19 @@ class DocumentIndexVisitor : public ASTVisitor {
 public:
     std::unordered_map<std::string, TurfTypePtr> VariableTypes;
     std::unordered_map<std::string, const StructDeclExprAST*> StructDecls;
+    // Declaration line (1-indexed compiler convention) per variable name --
+    // doc 05 G3's scope-distance ranking approximation. Not real scope
+    // depth (this visitor is flat, see the class comment above), just "how
+    // many lines away from the cursor was this declared" -- cheap, and a
+    // reasonable proxy: a variable declared 2 lines up is far more likely
+    // to be what the user means than one declared 200 lines up in an
+    // unrelated function.
+    std::unordered_map<std::string, int> VariableDeclLine;
 
     void visitVarDecl(VarDeclExprAST &Node) override {
         if (auto sym = Node.getResolvedSymbol()) {
             VariableTypes[Node.getName()] = sym->Type;
+            VariableDeclLine[Node.getName()] = Node.getNameLoc().Line;
         }
         if (Node.getInitializer()) const_cast<ExprAST*>(Node.getInitializer())->accept(*this);
     }
@@ -922,7 +932,8 @@ structMethods(const ResolverSymbolTable& symTable, const std::string& structName
 
 std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis& analysis,
                                                            const std::string& lineTextBeforeCursor,
-                                                           const std::string& documentPath) {
+                                                           const std::string& documentPath,
+                                                           int cursorLine) {
     std::vector<CompletionItem> items;
 
     TriggerContext ctx = classifyTrigger(lineTextBeforeCursor);
@@ -1018,6 +1029,12 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
             item.label = field.Name;
             item.kind = 5; // Field
             item.detail = field.Type ? field.Type->getName() : "";
+            // doc 05 G6 acceptance test: "p. lists its fields then instance
+            // methods" -- true of the emission order below already, but a
+            // client without an explicit sortText sorts the list
+            // alphabetically itself, silently interleaving fields and
+            // methods back together. "0" beats methods' "1" below.
+            item.sortText = "0" + field.Name;
             items.push_back(std::move(item));
         }
 
@@ -1034,6 +1051,7 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
             item.insertSnippet = buildCallSnippet(method, *sym, true);
             item.resolveName = structName + "." + method;
             item.resolveModule = owner;
+            item.sortText = "1" + method;
             items.push_back(std::move(item));
         }
         return items;
@@ -1050,18 +1068,41 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
     static const std::vector<std::string> types = {
         "int", "double", "bool", "string", "ptr", "void"
     };
-    for (const auto& kw : keywords) items.push_back({kw, 14, "keyword", ""});
-    for (const auto& ty : types) items.push_back({ty, 7, "type", ""});
-    items.push_back({"true", 21, "bool", ""});
-    items.push_back({"false", 21, "bool", ""});
-    items.push_back({"null", 21, "", ""});
-    items.push_back({"assert", 3, "Builtin", "assert(${1:condition}, \"${2:message}\")$0"});
+    // doc 05 G6: rank tiers so a real, specific symbol always beats a
+    // generic keyword/primitive-type suggestion that merely happens to
+    // sort earlier alphabetically -- "2" (keywords/types/literals) is
+    // deliberately the LOWEST tier; "0" (locals) and "1" (current-file
+    // functions/structs/enums) both beat it.
+    for (const auto& kw : keywords) items.push_back({kw, 14, "keyword", "", "", "", "2" + kw});
+    for (const auto& ty : types) items.push_back({ty, 7, "type", "", "", "", "2" + ty});
+    items.push_back({"true", 21, "bool", "", "", "", "2true"});
+    items.push_back({"false", 21, "bool", "", "", "", "2false"});
+    items.push_back({"null", 21, "", "", "", "", "2null"});
+    items.push_back({"assert", 3, "Builtin", "assert(${1:condition}, \"${2:message}\")$0", "", "", "2assert"});
 
     DocumentIndexVisitor indexer;
     for (const auto& ast : analysis.asts)
         if (ast) const_cast<ExprAST*>(ast.get())->accept(indexer);
     for (const auto& entry : indexer.VariableTypes) {
-        items.push_back({entry.first, 6, entry.second ? entry.second->getName() : "", ""});
+        CompletionItem item;
+        item.label = entry.first;
+        item.kind = 6;
+        item.detail = entry.second ? entry.second->getName() : "";
+        // Scope-distance ranking (doc 05 G3): closer declarations first,
+        // any declared AFTER the cursor (a real but less-likely-intended
+        // match -- e.g. still mid-typing the enclosing function) pushed
+        // behind every backward one instead of competing on raw distance.
+        int declLine = 0;
+        if (auto it = indexer.VariableDeclLine.find(entry.first); it != indexer.VariableDeclLine.end())
+            declLine = it->second;
+        int distance = 999999;
+        if (cursorLine > 0 && declLine > 0) {
+            distance = (declLine <= cursorLine) ? (cursorLine - declLine) : (100000 + (declLine - cursorLine));
+        }
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%06d", distance);
+        item.sortText = "0" + std::string(buf) + entry.first;
+        items.push_back(std::move(item));
     }
     for (const auto& name : symTable.getAllCurrentFileFunctionNames()) {
         if (name.find('.') != std::string::npos) continue; // struct methods, not bare-callable
@@ -1073,11 +1114,12 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
             item.insertSnippet = buildCallSnippet(name, *sym, false);
             item.resolveName = name;
             // resolveModule left "" -- current-file function.
+            item.sortText = "1" + name;
             items.push_back(std::move(item));
         }
     }
-    for (const auto& name : symTable.getAllStructNames()) items.push_back({name, 22, "struct", ""});
-    for (const auto& name : symTable.getAllEnumNames()) items.push_back({name, 22, "enum", ""});
+    for (const auto& name : symTable.getAllStructNames()) items.push_back({name, 22, "struct", "", "", "", "1" + name});
+    for (const auto& name : symTable.getAllEnumNames()) items.push_back({name, 22, "enum", "", "", "", "1" + name});
 
     return items;
 }
