@@ -154,7 +154,10 @@ overload's `signature()` with the active parameter highlighted. Reuses
   imported into this file, a meaningfully bigger feature than the
   filesystem listing above; genuinely deferred, not skipped for
   convenience.
-- **P2.3** `completionItem/resolve` + `data` payload + lazy docs (G4).
+- ✅ **P2.3** Done (2026-09-16): `completionItem/resolve` implemented for
+  all 4 function/method completion sites, `data` carries the flat
+  symbol name + owning module, lazy doc-comment fill reuses hover's
+  same-file/cross-file strategy. `resolveProvider` now advertised true.
 - **P2.4** Scope-distance ranking + de-dup + `sortText` (G3, G6).
 - **P2.5** Prefix pre-filter via `SuggestionIndex` trie; `isIncomplete` for big
   sets (G5).
