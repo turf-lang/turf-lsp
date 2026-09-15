@@ -197,9 +197,16 @@ everything; do it first.
   are all blind to anything textually inside one. See doc 06's Edge
   cases section for detail.
 
-### Phase 3 — "Navigate" (doc 08)
-- Find references + document highlight, workspace-wide (needs the workspace
-  index from doc 01).
+### Phase 3 — "Navigate" (doc 08) — ✅ core done (2026-09-16)
+- ✅ `documentHighlight` (in-file) + `references` (workspace-wide,
+  `includeDeclaration` honored) + `documentSymbol` (flat outline), all
+  shipped on a name+scope identity heuristic rather than waiting on
+  compiler item C's `symbolId()` (doc 02 §C) -- verified across a real
+  3-file workspace and a shadowing case (two same-named locals in
+  different functions correctly kept separate). Not done: Read/Write
+  tagging on highlights, struct-field/enum/module-name occurrences,
+  persistent/incremental indexing (every `references` request re-scans
+  the workspace fresh instead), `workspace/symbol`, `$/progress`.
 
 ### Phase 4 — "Change code" (doc 09, 10)
 - Formatter (new engine in `turf-lang`, exposed as `turf --format` and reused
@@ -218,7 +225,7 @@ everything; do it first.
 | M0 | Responsive, serialized server; cached analysis; cancellation | ✅ Phase 0 done (2026-09-15) |
 | M1 | Live red/yellow squiggles + full highlighting in both editors | ✅ server-side core done (2026-09-15); editor-side verification (P1.5) and the grammar-directory consolidation (P1.a, doc 11) still open |
 | M2 | Completion (incl. imports) + hover + go-to-def working end-to-end | ✅ done (2026-09-16) |
-| M3 | Find references + document highlight | M2, Phase 3 |
+| M3 | Find references + document highlight | ✅ core done (2026-09-16) — incremental indexing/`workspace/symbol` still open |
 | M4 | Format-on-save + rename + quick-fixes | M2, Phase 4 |
 | M5 | Published extensions, Neovim client, green CI | all |
 

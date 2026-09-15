@@ -99,25 +99,45 @@ already-cached analysis.
   better than none.
 
 ## Phased tasks (Phase 3)
-- **P3.1** Land compiler item C (`symbolId()`), or ship in-file
-  `documentHighlight` first on pointer identity.
-- **P3.2** `ReferenceVisitor` + per-file `OccurrenceTable`; wire into
-  `WorkspaceIndex`.
-- **P3.3** `documentHighlight` (in-file, Read/Write).
-- **P3.4** Workspace file enumeration + lazy indexing + file watcher
-  invalidation.
-- **P3.5** `references` (workspace-wide, `includeDeclaration` honored).
-- **P3.6** `documentSymbol` + `workspace/symbol` (bonus).
-- **P3.7** `$/progress` reporting for long scans.
+- ✅ **P3.1** Done (2026-09-16), via the doc's own escape hatch: shipped
+  on a name+scope identity heuristic -- (DeclLoc, module resolved to an
+  absolute file path) -- instead of waiting on compiler item C's
+  `symbolId()`. Turned out sufficient for workspace-wide `references`
+  too, not just in-file `documentHighlight`; item C not attempted.
+- ✅ **P3.2** Done, scoped down: `ReferenceVisitor` +
+  `findAllReferenceOccurrences()` exist and cover variable use/decl,
+  function call/def, method call (the 5 kinds `getDeclarationLoc()`
+  already resolves) -- struct/enum/field/module-name occurrences are a
+  documented scope cut. No persistent `OccurrenceTable` wired into
+  `WorkspaceIndex` -- see P3.4.
+- ✅ **P3.3** Done: in-file, restricted by matching identity. Read/Write
+  tagging not implemented (needs one more bit `ReferenceVisitor` doesn't
+  compute yet -- real scope cut, not attempted).
+- ⬜/✅ **P3.4** `WorkspaceIndex` file enumeration reused as-is (doc 01
+  P0.6, already existed); no lazy indexing/caching or file-watcher
+  invalidation added -- `references` re-analyzes every candidate file
+  fresh on EVERY request instead. Correct, not incremental; acceptable
+  per the doc's own "fine for typical project sizes" allowance, revisit
+  if real usage says otherwise.
+- ✅ **P3.5** Done: workspace-wide, `includeDeclaration` honored,
+  verified across a real 3-file workspace.
+- ✅/⬜ **P3.6** `documentSymbol` done (flat/non-hierarchical -- top-level
+  struct/enum/function only, no nested fields/methods). `workspace/symbol`
+  not done.
+- ⬜ **P3.7** Not done -- no `$/progress` reporting; a large-workspace
+  `references` scan simply blocks until it finishes.
 
 ## Acceptance tests
-- References on a function used in 3 files returns all call sites + the decl
-  (and excludes the decl when `includeDeclaration=false`).
-- Two locals named `i` in different functions: references on one returns only its
-  own uses.
-- `documentHighlight` on a variable marks its assignment as Write and reads as
-  Read.
-- References on a struct field returns only that struct's field uses, not
-  same-named locals.
-- Editing a file updates its occurrences without re-indexing the whole workspace.
-- `documentSymbol` shows structs with nested fields/methods.
+- ✅ References on a function used in 3 files returns all call sites + the decl
+  (and excludes the decl when `includeDeclaration=false`) -- verified live.
+- ✅ Two locals named `i` in different functions: references on one returns only its
+  own uses -- verified live.
+- ⬜ `documentHighlight` on a variable marks its assignment as Write and reads as
+  Read -- not implemented (see P3.3).
+- ⬜ References on a struct field returns only that struct's field uses, not
+  same-named locals -- not implemented (field occurrences out of scope, see P3.2).
+- ⬜ Editing a file updates its occurrences without re-indexing the whole workspace
+  -- moot: there's no persistent index to invalidate (see P3.4); every request
+  re-scans fresh, so edits are always reflected, just not incrementally.
+- ✅/⬜ `documentSymbol` shows top-level functions (verified); structs with
+  nested fields/methods not implemented (flat outline only).
