@@ -198,9 +198,12 @@ public:
 
 const ExprAST* SemanticQuery::findNodeAt(const DocumentAnalysis& analysis, int line, int col) {
     NodeFinderVisitor visitor(line, col);
-    for (const auto& ast : analysis.asts) {
-        if (ast) {
-            const_cast<ExprAST*>(ast.get())->accept(visitor);
+    // Skip the synthetic prelude imports (see DocumentAnalysis::
+    // preludeImportCount's doc comment) -- they're not real source the
+    // user can click on.
+    for (size_t i = analysis.preludeImportCount; i < analysis.asts.size(); ++i) {
+        if (analysis.asts[i]) {
+            const_cast<ExprAST*>(analysis.asts[i].get())->accept(visitor);
         }
     }
     return visitor.getBestNode();
@@ -602,9 +605,12 @@ public:
 
 std::vector<SemanticToken> SemanticQuery::getSemanticTokens(const DocumentAnalysis& analysis) {
     SemanticTokensVisitor visitor;
-    for (const auto& ast : analysis.asts) {
-        if (ast) {
-            const_cast<ExprAST*>(ast.get())->accept(visitor);
+    // Skip the synthetic prelude imports (DocumentAnalysis::
+    // preludeImportCount) -- tokenizing them would emit up to 6 phantom
+    // Namespace tokens overlapping the user's real first line.
+    for (size_t i = analysis.preludeImportCount; i < analysis.asts.size(); ++i) {
+        if (analysis.asts[i]) {
+            const_cast<ExprAST*>(analysis.asts[i].get())->accept(visitor);
         }
     }
     

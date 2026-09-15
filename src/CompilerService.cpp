@@ -200,6 +200,23 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
     CurTok = 0;
     getNextToken();
 
+    // Prelude auto-import -- mirrors main.cpp's runCompilerMain() exactly
+    // (same ParsePreludeImports(CurLoc) call at the same point, right after
+    // the first token is fetched). Without this, this function was the
+    // ONLY top-level-file entry point in the whole codebase that DIDN'T
+    // inject `import int; import double; import bool; import char; import
+    // strings; import array;` -- meaning ordinary code relying on a
+    // prelude-provided operator/UFCS method with no explicit import (their
+    // entire purpose) falsely failed to typecheck under the LSP while
+    // compiling fine through the real `turf` CLI. Confirmed live: hovering
+    // into a file that imports lib/std/io/net.tr (whose resolve_hostname()
+    // uses bare string `+`, relying on the `strings` prelude, exactly as
+    // designed) produced a spurious "cannot apply '+' to 'string' and
+    // 'string'" diagnostic under the LSP that `turf --typecheck` on the
+    // identical source does not produce.
+    std::vector<std::unique_ptr<ExprAST>> PreludeASTs = ParsePreludeImports(CurLoc);
+    size_t preludeCount = PreludeASTs.size();
+
     while (CurTok != TOK_EOF) {
         if (CurTok == ';') {
             getNextToken();
@@ -228,6 +245,14 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
             skipToNextTopLevelBoundary();
         }
     }
+
+    // Prepend the prelude imports parsed above -- resolveAll()/checkAll()
+    // below need to see them for their whole two-pass hoisting to register
+    // the prelude modules' functions/operators at all; DocumentAnalysis::
+    // preludeImportCount (set just before storing analysis->asts) is what
+    // lets every LSP-facing visitor skip back over them again afterward.
+    ASTs.insert(ASTs.begin(), std::make_move_iterator(PreludeASTs.begin()),
+                std::make_move_iterator(PreludeASTs.end()));
 
     // Restores every global this function touched. Must run on EVERY exit
     // path, including the two cancellation checkpoints below -- an early
@@ -280,6 +305,7 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
     }
 
     analysis->asts = std::move(ASTs);
+    analysis->preludeImportCount = preludeCount;
     analysis->resolver = std::move(resolver);
 
     restoreGlobals();

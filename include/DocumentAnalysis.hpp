@@ -41,6 +41,23 @@ struct MappedDiagnostic {
 class DocumentAnalysis {
 public:
     std::vector<std::unique_ptr<ExprAST>> asts;
+    // The first `preludeImportCount` entries of `asts` are the 6 synthetic
+    // `import int; import double; ...` nodes ParsePreludeImports() injects
+    // ahead of the user's real top-level declarations (turf-lang auto-
+    // imports these into every top-level file so e.g. bare string `+`
+    // resolves without an explicit `import strings;` -- see
+    // ParsePreludeImports()'s doc comment in turf-lang's Parser.h). They
+    // MUST be included when resolving/typechecking (that's the entire
+    // point -- without them, ordinary code using a prelude-provided
+    // operator/UFCS method falsely fails to typecheck under the LSP even
+    // though the real `turf` CLI compiles it fine), but every visitor that
+    // walks `asts` for USER-facing output (semantic tokens, hover,
+    // completion, findNodeAt) must skip them: they're synthesized with no
+    // real second source position (NameLoc == Loc == wherever the real
+    // file's first token happens to start -- see ModuleImportExprAST's own
+    // NameLoc doc comment), so tokenizing/hit-testing them would produce up
+    // to 6 phantom tokens overlapping the user's actual first line.
+    size_t preludeImportCount = 0;
     std::vector<MappedDiagnostic> diagnostics;
 
     // Kept alive past CompilerService::analyze() (instead of being destroyed
