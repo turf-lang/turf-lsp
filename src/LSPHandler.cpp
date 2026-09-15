@@ -1,6 +1,7 @@
 #include "LSPHandler.hpp"
 #include "SemanticQuery.hpp"
 #include "Logger.hpp"
+#include "Formatter.h"
 #include "Parser.h"
 #include <algorithm>
 #include <cctype>
@@ -301,6 +302,7 @@ void LSPHandler::dispatch(const json& msg) {
     if (method == "textDocument/documentHighlight") { handleDocumentHighlight(msg); return; }
     if (method == "textDocument/references") { handleReferences(msg); return; }
     if (method == "textDocument/documentSymbol") { handleDocumentSymbol(msg); return; }
+    if (method == "textDocument/formatting") { handleFormatting(msg); return; }
     if (method == "textDocument/semanticTokens/full") { handleSemanticTokens(msg); return; }
     if (method == "textDocument/semanticTokens/full/delta") { handleSemanticTokensDelta(msg); return; }
 
@@ -358,6 +360,7 @@ void LSPHandler::handleInitialize(const json& request) {
             {"documentHighlightProvider", true},
             {"referencesProvider", true},
             {"documentSymbolProvider", true},
+            {"documentFormattingProvider", true},
             {"semanticTokensProvider", {
                 {"legend", {
                     {"tokenTypes", {"variable", "function", "keyword", "type", "parameter", "struct", "string", "number", "operator", "namespace", "property", "enumMember", "method"}},
@@ -599,6 +602,20 @@ void LSPHandler::handleDocumentSymbol(const json& request) {
 
     auto cancelFlag = registerCancellable(id);
     enqueueWork([this, id, uri, cancelFlag]() { doDocumentSymbol(id, uri, cancelFlag); });
+}
+
+void LSPHandler::handleFormatting(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    auto formatOpts = params.value("options", json::object());
+    bool insertSpaces = formatOpts.value("insertSpaces", true);
+    int tabSize = formatOpts.value("tabSize", 4);
+
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, insertSpaces, tabSize, cancelFlag]() {
+        doFormatting(id, uri, insertSpaces, tabSize, cancelFlag);
+    });
 }
 
 void LSPHandler::handleSemanticTokens(const json& request) {
@@ -1208,6 +1225,48 @@ void LSPHandler::doDocumentSymbol(json id, std::string uri, std::shared_ptr<std:
         });
     }
     sendResponse(id, symbols);
+}
+
+// doc 09 P4.3: textDocument/formatting, reusing turf-lang's
+// turf::format::format() in-process (the SAME implementation `turf
+// --format` uses -- see that engine's own doc comment for the "one
+// implementation, two callers" rationale). Ships the simplest CORRECT
+// response shape: a single TextEdit spanning the whole document, not a
+// minimal line-level diff (doc 09's own text: "A single full-replace
+// edit is *allowed* but churns the client's cursor/undo; prefer a
+// minimal diff" -- explicitly allowed, just not the nicer option; a
+// real scope cut for this pass, not an oversight). No analyze() call
+// needed at all -- formatting is a pure function of the raw text, so
+// this doesn't even touch the worker's usual ensureFreshAnalysis() path.
+void LSPHandler::doFormatting(json id, std::string uri, bool insertSpaces, int tabSize,
+                               std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!m_documents.contains(uri)) { sendError(id, -32801, "Content modified"); return; }
+
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) { sendError(id, -32801, "Content modified"); return; }
+
+    turf::format::FormatOptions opts;
+    opts.InsertSpaces = insertSpaces;
+    opts.IndentWidth = tabSize > 0 ? tabSize : 4;
+    auto result = turf::format::format(textSnap->text, opts);
+
+    if (!result.Ok || result.Text == textSnap->text) {
+        sendResponse(id, json::array());
+        return;
+    }
+
+    PositionMapper mapper(textSnap->text, m_positionEncoding);
+    LspPosition endPos = mapper.toLspPosition(textSnap->text.size());
+    json edit = {
+        {"range", jsonRange({{0, 0}, endPos})},
+        {"newText", result.Text}
+    };
+    sendResponse(id, json::array({edit}));
 }
 
 std::vector<int> LSPHandler::computeSemanticTokenData(const DocumentAnalysis& analysis,

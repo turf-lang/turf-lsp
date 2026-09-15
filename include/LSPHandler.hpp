@@ -71,6 +71,7 @@ private:
     void handleDocumentHighlight(const json& request);
     void handleReferences(const json& request);
     void handleDocumentSymbol(const json& request);
+    void handleFormatting(const json& request);
     void handleSemanticTokens(const json& request);
     void handleSemanticTokensDelta(const json& request);
 
@@ -87,6 +88,8 @@ private:
     void doReferences(json id, std::string uri, LspPosition pos, bool includeDeclaration,
                        std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doDocumentSymbol(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doFormatting(json id, std::string uri, bool insertSpaces, int tabSize,
+                       std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doSemanticTokens(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doSemanticTokensDelta(json id, std::string uri, std::string previousResultId,
                                 std::shared_ptr<std::atomic<bool>> cancelFlag);
