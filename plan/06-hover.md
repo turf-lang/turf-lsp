@@ -77,6 +77,21 @@ Keep it tight — one code block + a couple of lines.
 ## Edge cases
 - Unresolved node (typo, mid-edit) → return `null` (no hover) rather than a wrong
   guess. Optionally fall back to a purely lexical "keyword: ..." for keywords.
+- **Known limitation, found 2026-09-15, not fixed this session**: none of
+  the AST visitors (`NodeFinderVisitor`, `SemanticTokensVisitor`,
+  `DocumentIndexVisitor`, `TypeDeclIndexVisitor`) override
+  `visitRecoverExpr`, so anything textually inside a `recover ... produce
+  ...` / `recover as err run { ... }` expression is invisible to
+  hover/definition/typeDefinition/semantic-tokens/completion alike --
+  confirmed live: `net::resolve_hostname("localhost") recover produce
+  "FAIL"` produces zero semantic tokens and zero hover/definition results
+  for the call inside the `recover`, while the identical call without
+  `recover` works correctly. A real gap (error-handling is a first-class
+  turf-lang feature, docs/planning/Errors.md), not attempted here --
+  fixing it means adding a `visitRecoverExpr` override recursing into
+  `RecoverExprAST`'s wrapped expression to (at minimum) all 4 visitors
+  above, plus understanding whether the `produce`/`run` bodies need their
+  own handling too. Left as a clearly-scoped follow-up.
 - Overloaded functions: `getResolvedCallTarget()` gives the *selected* overload
   at a call; at a bare function *name* with multiple overloads, list all
   signatures.
@@ -88,12 +103,19 @@ Keep it tight — one code block + a couple of lines.
   current file resolves to the target's signature via the resolved symbol.
 
 ## Phased tasks
-- **P2.1** Add `range` to the hover result (via `PositionMapper`).
-- **P2.2** Extend `hoverText` to enums, enum members, fields, params, type
-  annotations, module names.
-- **P2.3** Doc-comments: interim LSP source re-scan (option 2), then switch to
-  compiler-captured `getDocComment()` (option 1) when available.
-- **P2.4** Overload listing at bare function names.
+- ✅ **P2.1** Done (2026-09-15): `range` added to every hover result.
+- ✅ **P2.2** Done (2026-09-15): enum members, struct field access, and
+  module names all hover correctly now. Params covered too (parameter
+  hover appends "parameter"). Type-ANNOTATION hover (hovering the `: T`
+  text itself, not a use of `T`) is not separately implemented -- hovering
+  a type annotation lands on the same node a variable/field hover already
+  answers via its declared type, so there's no separate "type annotation"
+  hover target distinct from what P2.2's other cases already cover.
+- ✅ **P2.3** Interim (LSP source re-scan, option 2) done (2026-09-15),
+  same-file and cross-file. Compiler-captured `getDocComment()` (option
+  1) not attempted -- still the documented "later correctness/reuse
+  upgrade", not required for this to work today.
+- ⬜ **P2.4** Not done — overload listing at bare function names.
 
 ## Acceptance tests
 - Hover a local shows `immut count: int` (or `mut`), underlining `count`.
