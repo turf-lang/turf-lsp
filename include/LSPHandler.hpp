@@ -1,46 +1,141 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <nlohmann/json.hpp>
+
 #include "CompilerService.hpp"
-#include "DocumentAnalysis.hpp"
+#include "DocumentStore.hpp"
+#include "PositionMapper.hpp"
+#include "WorkspaceIndex.hpp"
 
 using json = nlohmann::json;
 
-struct DocumentState {
-    std::string text;
-    int version;
-    std::unique_ptr<DocumentAnalysis> analysis;
-};
-
+// Two-thread model (doc 01 P0.1): the I/O thread (whatever calls
+// handleMessage) only frames/parses JSON-RPC and does cheap, non-compiler
+// bookkeeping (updating DocumentStore's text, cancellation flags,
+// lifecycle state) -- it never blocks on an `analyze()` call. Anything that
+// touches the compiler (CompilerService::analyze(), SemanticQuery over a
+// fresh/patched analysis, ResolveModuleFile()'s module-search cache) runs
+// exclusively on one dedicated worker thread, because the compiler was
+// written as a single-process batch tool: its lexer/parser cursor,
+// GlobalSymbolTable, DiagnosticEngine, and the recovery jump buffer are all
+// plain process-global mutable state with no locking of their own. Two
+// analyses running concurrently would corrupt each other; one worker owning
+// all of it serializes access without needing to touch the compiler itself.
 class LSPHandler {
 public:
     LSPHandler();
-    ~LSPHandler() = default;
+    ~LSPHandler();
 
-    // Parses a JSON-RPC message and dispatches it
+    // Parses a JSON-RPC message and dispatches it. Called from the I/O
+    // thread; returns quickly (never runs compiler code itself -- see the
+    // class comment).
     void handleMessage(const std::string& message);
 
 private:
-    // Core LSP Lifecycle methods
+    // ---- Dispatch (I/O thread) ----
+    void dispatch(const json& msg);
+    bool isRequest(const json& msg) const;
+
+    // ---- Lifecycle & document sync (I/O thread; no compiler access) ----
     void handleInitialize(const json& request);
     void handleInitialized(const json& notification);
     void handleShutdown(const json& request);
     void handleExit();
-    void handleCompletion(const json& request);
     void handleDidOpen(const json& notification);
     void handleDidChange(const json& notification);
     void handleDidClose(const json& notification);
+    void handleCancelRequest(const json& notification);
+
+    // ---- Request entry points (I/O thread: parse params, enqueue work) ----
+    void handleCompletion(const json& request);
     void handleHover(const json& request);
     void handleDefinition(const json& request);
     void handleSemanticTokens(const json& request);
-    void publishDiagnostics(const std::string& uri);
 
-    // Helper to send a JSON-RPC response or notification
+    // ---- Work bodies (worker thread only) ----
+    void doCompletion(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doHover(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doDefinition(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doSemanticTokens(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doPublishDiagnostics(std::string uri);
+
+    // Returns the cached analysis if it's already for the document's
+    // current text version, otherwise runs a fresh analyze() (worker
+    // thread only) and stores it back. This is what makes on-demand
+    // requests correct without needing them to wait on the debounce timer
+    // (doc 01 P0.1's "always run against the latest analyzed version"):
+    // rather than coordinate with the debounce, each request just
+    // guarantees its own freshness the moment it runs.
+    std::shared_ptr<const DocumentAnalysis> ensureFreshAnalysis(const std::string& uri,
+                                                                  const std::function<bool()>& isCancelled = {});
+
+    // ---- Worker thread (owns all compiler access) ----
+    void enqueueWork(std::function<void()> task);
+    void workerLoop();
+
+    // ---- Debounce thread (schedules diagnostics re-publication) ----
+    void scheduleDebouncedDiagnostics(const std::string& uri, int64_t version);
+    void debounceLoop();
+
+    // ---- Cancellation (doc 01 P0.4) ----
+    std::shared_ptr<std::atomic<bool>> registerCancellable(const json& id);
+    void unregisterCancellable(const std::string& idKey);
+
+    // ---- Outgoing messages (thread-safe: both worker and I/O thread write) ----
     void sendMessage(const json& message);
+    void sendResponse(const json& id, const json& result);
+    void sendError(const json& id, int code, const std::string& message);
 
-    std::unordered_map<std::string, DocumentState> m_documents;
+    std::string uriToPath(const std::string& uri) const;
+
+    DocumentStore m_documents;
     CompilerService m_compiler;
-    bool m_shutdownRequested;
+    WorkspaceIndex m_workspaceIndex;
+
+    bool m_initialized = false;
+    bool m_shutdownRequested = false;
+    PositionEncodingKind m_positionEncoding = PositionEncodingKind::UTF16;
+
+    // Worker thread + single-consumer queue.
+    std::thread m_workerThread;
+    std::mutex m_queueMutex;
+    std::condition_variable m_queueCv;
+    std::deque<std::function<void()>> m_queue;
+    bool m_stopWorker = false;
+
+    // Debounce thread: coalesces rapid didChange bursts into one
+    // publishDiagnostics per ~debounce-window, per doc 01 P0.1. Keyed by
+    // uri; a new edit simply overwrites the pending entry's due time
+    // (naturally coalescing) rather than queuing a second timer.
+    struct PendingDebounce {
+        int64_t version;
+        std::chrono::steady_clock::time_point dueAt;
+    };
+    std::thread m_debounceThread;
+    std::mutex m_debounceMutex;
+    std::condition_variable m_debounceCv;
+    std::unordered_map<std::string, PendingDebounce> m_pendingDebounce;
+    bool m_stopDebounce = false;
+    std::chrono::milliseconds m_debounceDelay;
+
+    // Serializes writes to stdout: both the I/O thread (responses to
+    // lifecycle requests) and the worker thread (responses to
+    // hover/completion/etc., plus diagnostics notifications) call
+    // sendMessage().
+    std::mutex m_outMutex;
+
+    // request id (its json::dump()) -> cancellation flag, for in-flight or
+    // still-queued cancellable requests (completion/hover/definition/
+    // semanticTokens).
+    std::mutex m_cancelMutex;
+    std::unordered_map<std::string, std::shared_ptr<std::atomic<bool>>> m_cancelFlags;
 };

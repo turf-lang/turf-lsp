@@ -37,7 +37,8 @@ static void skipToNextTopLevelBoundary() {
     } while (g_braceDepth > 0);
 }
 
-std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view source, std::string_view filename) {
+std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view source, std::string_view filename,
+                                                             const std::function<bool()>& isCancelled) {
     auto analysis = std::make_unique<DocumentAnalysis>();
 
     DiagnosticEngine::clearDiagnostics();
@@ -132,6 +133,28 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
         }
     }
 
+    // Restores every global this function touched. Must run on EVERY exit
+    // path, including the two cancellation checkpoints below -- an early
+    // `return nullptr` that skipped this would leave SourceFile/
+    // SourceFilename/g_recoverJmp pointed at this call's (about-to-be-
+    // destroyed) locals for whatever runs next on the worker thread.
+    auto restoreGlobals = [&]() {
+        g_recoverActive = savedRecoverActive;
+        std::memcpy(g_recoverJmp, savedJmpBuf, sizeof(jmp_buf));
+        SourceFile = oldFile;
+        SourceFilename = oldSourceFilename;
+    };
+
+    // Cancellation checkpoint (doc 01 P0.4): coarse-grained, between passes
+    // rather than mid-pass -- see the rationale on the declaration in
+    // CompilerService.hpp. Parsing itself is never cancelled mid-way: it's
+    // typically the cheapest pass and a partial AST is less useful than
+    // just letting it finish.
+    if (isCancelled && isCancelled()) {
+        restoreGlobals();
+        return nullptr;
+    }
+
     // Resolver/TypeChecker each still recover as a single unit (matching
     // main.cpp's own mandatory pass) -- an error deep in resolveAll()/
     // checkAll() still longjmps out of the whole call, but every node visited
@@ -145,6 +168,11 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
     }
     g_recoverActive = false;
 
+    if (isCancelled && isCancelled()) {
+        restoreGlobals();
+        return nullptr;
+    }
+
     {
         TypeChecker TC(resolver->symbolTable());
         g_recoverActive = true;
@@ -157,11 +185,7 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
     analysis->asts = std::move(ASTs);
     analysis->resolver = std::move(resolver);
 
-    // Restore global state.
-    g_recoverActive = savedRecoverActive;
-    std::memcpy(g_recoverJmp, savedJmpBuf, sizeof(jmp_buf));
-    SourceFile = oldFile;
-    SourceFilename = oldSourceFilename;
+    restoreGlobals();
 
     // Collect diagnostics for the caller to store (LSPHandler currently
     // chooses not to publish them to the client -- see publishDiagnostics()
