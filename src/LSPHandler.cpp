@@ -4,8 +4,10 @@
 #include "Parser.h"
 #include <cctype>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <map>
+#include <sstream>
 #include <string>
 
 namespace {
@@ -86,6 +88,57 @@ LspRange rangeForDiagLocation(const MappedDiagLocation& loc, const std::string& 
     r.start = {loc.line - 1, loc.col - 1};
     r.end = {loc.line - 1, loc.col - 1 + std::max(loc.byteLen, 1)};
     return r;
+}
+
+// Splits `text` into lines (stripping a trailing '\r' on each, matching
+// lineTextUpToByteOffset()'s own convention above), for readLeadingDocComment()
+// below -- neither the current document's PositionMapper nor a target file
+// read fresh off disk exposes a pre-split line vector directly.
+std::vector<std::string> splitLines(const std::string& text) {
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (true) {
+        size_t nl = text.find('\n', start);
+        std::string line = text.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        lines.push_back(std::move(line));
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    return lines;
+}
+
+// Doc 06 P2.3's interim (LSP-side) doc-comment source: turf-lang's
+// stdlib/showcase code is richly commented immediately above a
+// declaration (AGENTS.md's WHY-comment convention), and hover is the one
+// place a user actually wants to read that prose without opening the
+// file. Scans backward from directly above `declLine` (1-indexed,
+// compiler convention) for a CONTIGUOUS run of `//` lines -- stops at the
+// first blank or non-`//` line, so a comment separated from the
+// declaration by even one blank line is deliberately NOT picked up (it
+// reads as unrelated to THIS declaration, not a stray formatting choice).
+// Strips each line's `//` marker and one following space if present.
+// Returns "" (not found) rather than guessing at a comment that isn't
+// truly attached.
+std::string readLeadingDocComment(const std::vector<std::string>& lines, int declLine) {
+    std::vector<std::string> collected; // bottom-to-top as scanned
+    int i = declLine - 2; // 0-indexed line directly above declLine
+    while (i >= 0 && static_cast<size_t>(i) < lines.size()) {
+        const std::string& line = lines[i];
+        size_t start = line.find_first_not_of(" \t");
+        if (start == std::string::npos || line.compare(start, 2, "//") != 0) break;
+        std::string text = line.substr(start + 2);
+        if (!text.empty() && text.front() == ' ') text.erase(0, 1);
+        collected.push_back(std::move(text));
+        --i;
+    }
+    if (collected.empty()) return "";
+    std::string result;
+    for (auto it = collected.rbegin(); it != collected.rend(); ++it) {
+        if (!result.empty()) result += "\n";
+        result += *it;
+    }
+    return result;
 }
 
 json jsonRange(const LspRange& r) {
@@ -730,6 +783,34 @@ void LSPHandler::doHover(json id, std::string uri, LspPosition pos, std::shared_
     if (node) {
         auto info = SemanticQuery::hover(node, compLine, compCol);
         if (info) {
+            // Doc-comment (doc 06 P2.3, interim LSP-side source rescan):
+            // reuses getDeclarationLoc() -- same query doDefinition() uses
+            // to find WHERE a symbol is declared -- to find WHAT file/line
+            // to scan backward from. Only the node kinds that resolve a
+            // real declaration site get one; a struct field/enum
+            // member/module-name hover (which hover() answers but
+            // getDeclarationLoc() doesn't resolve) simply gets none, which
+            // is correct -- there's no single declaration line to attach a
+            // "doc comment" to for those.
+            if (auto declLocOpt = SemanticQuery::getDeclarationLoc(node);
+                declLocOpt && declLocOpt->loc.Line > 0) {
+                std::string docComment;
+                if (declLocOpt->moduleName.empty()) {
+                    docComment = readLeadingDocComment(splitLines(textSnap->text), declLocOpt->loc.Line);
+                } else {
+                    std::string docPath = uriToPath(uri);
+                    std::string resolved = ResolveModuleFile(declLocOpt->moduleName, docPath);
+                    if (!resolved.empty()) {
+                        std::ifstream targetFile(resolved);
+                        if (targetFile) {
+                            std::stringstream buf;
+                            buf << targetFile.rdbuf();
+                            docComment = readLeadingDocComment(splitLines(buf.str()), declLocOpt->loc.Line);
+                        }
+                    }
+                }
+                if (!docComment.empty()) info->markdown += "\n\n---\n" + docComment;
+            }
             result = {{"contents", {{"kind", "markdown"}, {"value", info->markdown}}}};
             if (info->length > 0) {
                 result["range"] = jsonRange(mapper.toLspRange(info->loc.Line, info->loc.Col, info->length));
