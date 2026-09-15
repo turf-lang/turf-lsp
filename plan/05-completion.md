@@ -143,17 +143,22 @@ overload's `signature()` with the active parameter highlighted. Reuses
 
 ## Phased tasks
 - **P2.1** Reuse cached analysis; patch-parse only when necessary (G1).
-- ✅/⬜ **P2.2** Partially done (2026-09-15): `import <prefix>` module-name
-  completion shipped, backed by turf-lang's new `ListAvailableModules()`
+- ✅ **P2.2** Done (2026-09-16). `import <prefix>` module-name completion
+  (2026-09-15) backed by turf-lang's new `ListAvailableModules()`
   (unions `lib/std/**` + `lib/usr/**` + sibling `.tr` files, sharing
   `IndexModuleDir()`/`TurfInstallRoot()` with `ResolveModuleFile()` so it
   can't disagree with a real import). Confirmed turf-lang has no `from X
   import Y` form to also support (only `extern from "lib" fn ...` uses
-  `from`). Not done: `import mod::<prefix>` (mod's exported symbols) --
-  needs loading the target module's own symbol table before it's actually
-  imported into this file, a meaningfully bigger feature than the
-  filesystem listing above; genuinely deferred, not skipped for
-  convenience.
+  `from`). `import mod::<prefix>` (2026-09-16): `mod`'s exported symbols
+  read from a completely separate analysis of `mod`'s own file (via
+  `ResolveModuleFile()` + a fresh `m_compiler.analyze()` call, never
+  stored back onto the current document) -- `mod` isn't imported into
+  the current file yet, so nothing in ITS symbol table could answer
+  this. Known imprecision: the module analysis's `getAllStructNames()`/
+  `getAllEnumNames()` return every type in that module's own flat,
+  transitively-imported namespace, not just what it directly declares --
+  accepted per this codebase's "over-suggesting beats missing a real
+  one" stance, not verified against actual re-export rules.
 - ✅ **P2.3** Done (2026-09-16): `completionItem/resolve` implemented for
   all 4 function/method completion sites, `data` carries the flat
   symbol name + owning module, lazy doc-comment fill reuses hover's
@@ -174,9 +179,12 @@ overload's `signature()` with the active parameter highlighted. Reuses
   (`net`, `list`, `io`, ...); accepting inserts `import net;` -- verified
   live (2026-09-15): `import ne` returns all 27 resolvable names
   (23 stdlib + sibling files), each with insertText `"<name>;"`.
-- ⬜ `import io::` lists `io`'s exported functions -- not done, see P2.2.
-- `p.` on a `Point` instance lists its fields then instance methods (not
-  statics); `Point::` lists `new`, `default`, static methods (not instance).
+- ✅ `import net::` lists `net`'s exported functions (with full
+  signatures) and structs -- verified live (2026-09-16): all 13 real
+  functions plus structs returned.
+- ✅ `p.` on a struct instance lists its fields then instance methods
+  (not statics), verified via `sortText` ranking (2026-09-16) so a
+  client can't silently re-interleave them alphabetically.
 - A free function suggestion inserts a call snippet with tab-stops over its
   params (self skipped for methods).
 - Completing does **not** trigger a second full analysis (perf: reuses cache).
