@@ -190,12 +190,54 @@ void LSPHandler::handleCompletion(const json& request) {
     if (it != m_documents.end() && it->second.analysis) {
         std::string prefixText = lineTextUpToCursor(it->second.text, line, character);
 
-        std::string path = uri;
-        if (path.find("file://") == 0) path = path.substr(7);
-        std::string patchedText = patchForCompletion(it->second.text, line, character);
-        auto completionAnalysis = m_compiler.analyze(patchedText, path);
+        // Try the already-cached analysis first (the one didOpen/didChange
+        // just computed on the real, unpatched buffer) for an `Ident::`
+        // trigger specifically, instead of always paying for a second full
+        // analyze() per completion request. This is the one trigger shape
+        // where it's actually safe: `::`'s base is always a module, struct,
+        // or enum name (turf-lang has no local-scoped equivalent), and all
+        // three are registered from their OWN separate top-level
+        // declaration (`import X;` / `struct X {}` / `enum X {}`) --
+        // resolving `Ident` never depends on whether the CURRENT (possibly
+        // still-being-typed, unterminated) statement's enclosing function
+        // parsed successfully. A bare-word or `.` (MemberAccess) trigger
+        // does NOT get this treatment: both commonly resolve against a
+        // LOCAL variable declared earlier in the very same function this
+        // statement is inside, and turf-lang's recovery only resyncs at
+        // TOP-LEVEL statement boundaries (not within a function body) --
+        // an unterminated in-progress statement anywhere in that function
+        // (which is exactly the buffer's live state while the user is mid-
+        // typing) drops the WHOLE function's locals from the cached
+        // analysis, `greeting` included, even though `greeting` itself was
+        // declared cleanly on an earlier line. (Confirmed live: a bare-word
+        // completion request right after typing `gre` with no trailing `;`
+        // yet came back with keywords/types only -- 77 items, technically
+        // non-empty -- but missing the in-scope local `greeting` entirely,
+        // because SemanticQuery::getCompletions()'s "Bare word" branch
+        // always pads the list with keywords regardless, so "non-empty"
+        // can't be used as a signal that locals are actually complete.)
+        // Those two trigger kinds always go through the patched reanalysis
+        // below, exactly as before this change.
+        bool isScopeAccessTrigger = false;
+        {
+            int pos = static_cast<int>(prefixText.size());
+            while (pos > 0 && isIdentChar(prefixText[pos - 1])) pos--;
+            isScopeAccessTrigger = pos >= 2 && prefixText[pos - 1] == ':' && prefixText[pos - 2] == ':';
+        }
 
-        auto completions = SemanticQuery::getCompletions(*completionAnalysis, prefixText);
+        std::vector<CompletionItem> completions;
+        if (isScopeAccessTrigger) {
+            completions = SemanticQuery::getCompletions(*it->second.analysis, prefixText);
+        }
+
+        if (!isScopeAccessTrigger || completions.empty()) {
+            std::string path = uri;
+            if (path.find("file://") == 0) path = path.substr(7);
+            std::string patchedText = patchForCompletion(it->second.text, line, character);
+            auto completionAnalysis = m_compiler.analyze(patchedText, path);
+            completions = SemanticQuery::getCompletions(*completionAnalysis, prefixText);
+        }
+
         for (const auto& item : completions) {
             json lspItem = {
                 {"label", item.label},
