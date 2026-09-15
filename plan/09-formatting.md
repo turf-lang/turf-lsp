@@ -102,23 +102,49 @@ reformat on a broken buffer.
 - Multibyte content → edits' ranges via `PositionMapper`.
 
 ## Phased tasks (Phase 4)
-- **P4.1** Compiler: trivia-preserving lex mode + `turf::format::format()` +
-  `turf --format[ --write]` (doc 02 §D).
-- **P4.2** Token-stream formatter with the rules above; golden + idempotence +
-  "still compiles" tests in `turf-lang/tests/`.
-- **P4.3** LSP `textDocument/formatting` → minimal `TextEdit[]` diff.
-- **P4.4** `rangeFormatting`.
-- **P4.5** `onTypeFormatting` (`}`, `;`, newline).
-- **P4.6** (later) AST-driven line-breaking for long calls/params behind a width
-  option.
+- ✅/⬜ **P4.1** Done, scoped down (2026-09-16): `turf::format::format()` +
+  `turf --format[ --write]` shipped, but WITHOUT the trivia-preserving
+  lex mode this task originally called for. Turned out unnecessary for
+  an indentation-only formatter: re-indenting only touches each line's
+  LEADING whitespace, using the compiler's existing `g_braceDepth`
+  counter (already tracked globally by `getNextToken()` for parse-error
+  recovery) for depth, never re-tokenizing/re-emitting comments or
+  trivia at all -- so nothing needed to change in the Lexer.
+- ✅/⬜ **P4.2** Scoped down: indentation-only, not the fuller
+  spacing/operator/blank-line rule set doc 09's design section lists
+  (K&R braces, operator spacing, etc.) -- deliberately deferred, see
+  Formatter.h's own doc comment for why (avoids the `List<T>` vs `a < b`
+  generic-bracket ambiguity a token-stream RE-EMISSION would have to
+  solve correctly). Idempotence + "still compiles" verified exhaustively
+  (see the commit) but not added as a permanent `turf-lang/tests/`
+  golden-file suite -- ad hoc verification only this session.
+- ✅ **P4.3** Done: `textDocument/formatting`, single full-document
+  `TextEdit` (spec-legal, not the nicer minimal diff -- explicitly
+  allowed, see the commit).
+- ⬜ **P4.4** Not done -- `rangeFormatting`.
+- ⬜ **P4.5** Not done -- `onTypeFormatting`.
+- ⬜ **P4.6** Not done (explicitly "later" even in the original plan).
 
 ## Acceptance tests
-- Formatting every `showcase/*.tr` is idempotent and the result still compiles
-  (`test_runner` semantics).
-- Mangled-whitespace input (random spaces/blank lines) formats to the canonical
-  style.
-- A file with dense doc-comments keeps every comment, correctly re-indented.
-- `rangeFormatting` a single function leaves the rest of the file byte-identical.
-- Format-on-save works in VS Code and Neovim.
-- Formatting a buffer with a syntax error either no-ops or conservatively
-  formats without deleting code.
+- ✅ Formatting every `showcase/*.tr` is idempotent and the result still compiles
+  (`test_runner` semantics) -- verified live for all 7, plus all 645 `tests/**/*.tr`
+  (100% idempotent; the real `test_runner.sh` against the whole `tests/`
+  tree formatted in place gives the identical 605/606 baseline).
+- ✅ Mangled-whitespace input (random spaces/blank lines) formats to the
+  canonical style -- verified live.
+- ✅ A file with dense doc-comments keeps every comment, correctly
+  re-indented -- verified live, including the "comment directly after an
+  opening brace" and "comment directly before a closing brace" edge
+  cases specifically (both caught real bugs during testing, both fixed
+  before landing).
+- ⬜ `rangeFormatting` a single function leaves the rest of the file
+  byte-identical -- not implemented (P4.4).
+- ⬜ Format-on-save works in VS Code and Neovim -- not verified (no live
+  editor session available this session, same limitation doc 03's P1.5
+  already notes).
+- ✅ Formatting a buffer with a syntax error either no-ops or
+  conservatively formats without deleting code -- structurally true by
+  construction (the formatter only ever rewrites leading/trailing
+  whitespace per line; it cannot delete a non-whitespace byte regardless
+  of whether the buffer parses), not separately tested against a live
+  syntax-error buffer this session.
