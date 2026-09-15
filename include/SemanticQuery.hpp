@@ -3,6 +3,7 @@
 #include "DocumentAnalysis.hpp"
 #include "AST.h"
 #include "ResolverSymbolTable.h"
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -56,6 +57,16 @@ struct SymbolLocation {
     std::string moduleName;
 };
 
+// A hover result: the rendered markdown plus the span of the hovered token
+// itself (doc 06 P2.1's `range`, so the client underlines exactly the
+// symbol rather than nothing). `length` is 0 (never rendered as a range by
+// the caller) when the exact span isn't confidently known.
+struct HoverInfo {
+    std::string markdown;
+    SourceLocation loc;
+    int length = 0;
+};
+
 class SemanticQuery {
 public:
     // Finds the innermost AST node that intersects with the given Line and Col.
@@ -69,8 +80,12 @@ public:
     // along with the module name if it's imported.
     static std::optional<SymbolLocation> getDeclarationLoc(const ExprAST* node);
 
-    // Formats a hover tooltip for the symbol referenced by the node.
-    static std::optional<std::string> hoverText(const ExprAST* node);
+    // Formats a hover tooltip (+ its own source range) for the symbol
+    // referenced by `node`. `cursorLine`/`cursorCol` (1-indexed, same as
+    // findNodeAt) are needed only to disambiguate a ScopeAccessExprAST's two
+    // names (`Left::Right`) sharing one node -- every other node kind
+    // ignores them.
+    static std::optional<HoverInfo> hover(const ExprAST* node, int cursorLine, int cursorCol);
 
     // Extracts semantic tokens from the given document analysis. Name-bearing
     // nodes (struct/fn/extern/var decls, field/method access, module imports)

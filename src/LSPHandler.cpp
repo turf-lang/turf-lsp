@@ -661,9 +661,12 @@ void LSPHandler::doHover(json id, std::string uri, LspPosition pos, std::shared_
     json result = nullptr;
     const ExprAST* node = SemanticQuery::findNodeAt(*analysis, compLine, compCol);
     if (node) {
-        auto text = SemanticQuery::hoverText(node);
-        if (text) {
-            result = {{"contents", {{"kind", "markdown"}, {"value", *text}}}};
+        auto info = SemanticQuery::hover(node, compLine, compCol);
+        if (info) {
+            result = {{"contents", {{"kind", "markdown"}, {"value", info->markdown}}}};
+            if (info->length > 0) {
+                result["range"] = jsonRange(mapper.toLspRange(info->loc.Line, info->loc.Col, info->length));
+            }
         }
     }
     sendResponse(id, result);

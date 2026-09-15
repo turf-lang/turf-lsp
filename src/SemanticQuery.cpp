@@ -182,6 +182,16 @@ public:
         if (Node.getIndex()) const_cast<ExprAST*>(Node.getIndex())->accept(*this);
     }
 
+    // Only the `import <name>` statement's own name is hit-testable here --
+    // NOT Node.getBody(), the full parsed AST of a DIFFERENT file (its
+    // loc/col coordinates belong to that file, not this one; recursing
+    // would let a hover/definition request land on the wrong document's
+    // positions). Same reasoning SemanticTokensVisitor::visitModuleImport
+    // already documents.
+    void visitModuleImport(ModuleImportExprAST &Node) override {
+        checkNode(&Node, Node.getNameLoc(), static_cast<int>(Node.getModuleName().length()));
+    }
+
     // Default implementations for others that we might not fully traverse for MVP
     // but we can add more if needed
 };
@@ -223,7 +233,37 @@ std::optional<SymbolLocation> SemanticQuery::getDeclarationLoc(const ExprAST* no
     return std::nullopt;
 }
 
-std::optional<std::string> SemanticQuery::hoverText(const ExprAST* node) {
+namespace {
+// The type of the VALUE an expression evaluates to, for the small set of
+// expression kinds hover needs to chase a field access through (`p.x`,
+// `a.b.c`, `f().field`). Deliberately conservative -- returns nullptr
+// (never a guess) for anything it doesn't specifically handle, e.g. a
+// binary expression or a literal. Not a general type-inference engine: it
+// only reads data the Resolver/TypeChecker already attached to the node.
+TurfTypePtr exprType(const ExprAST* e) {
+    if (!e) return nullptr;
+    if (auto v = dynamic_cast<const VariableExprAST*>(e)) {
+        auto sym = v->getResolvedSymbol();
+        return sym ? sym->Type : nullptr;
+    }
+    if (auto fa = dynamic_cast<const FieldAccessExprAST*>(e)) {
+        auto baseTy = exprType(fa->getBase());
+        auto st = dynamic_cast<const TurfStructType*>(baseTy.get());
+        return st ? st->getFieldType(fa->getFieldName()) : nullptr;
+    }
+    if (auto mc = dynamic_cast<const MethodCallExprAST*>(e)) {
+        auto target = mc->getResolvedCallTarget();
+        return target ? target->ReturnType : nullptr;
+    }
+    if (auto fc = dynamic_cast<const FuncCallExprAST*>(e)) {
+        auto target = fc->getResolvedCallTarget();
+        return target ? target->ReturnType : nullptr;
+    }
+    return nullptr;
+}
+} // namespace
+
+std::optional<HoverInfo> SemanticQuery::hover(const ExprAST* node, int cursorLine, int cursorCol) {
     if (!node) return std::nullopt;
 
     if (auto varNode = dynamic_cast<const VariableExprAST*>(node)) {
@@ -233,7 +273,8 @@ std::optional<std::string> SemanticQuery::hoverText(const ExprAST* node) {
             text += sym->Name + ": ";
             text += (sym->Type ? sym->Type->getName() : "unknown");
             text += "\n```";
-            return text;
+            if (sym->IsParameter) text += "\nparameter";
+            return HoverInfo{text, varNode->getLoc(), static_cast<int>(varNode->getName().length())};
         }
     } else if (auto varDecl = dynamic_cast<const VarDeclExprAST*>(node)) {
         if (auto sym = varDecl->getResolvedSymbol()) {
@@ -242,19 +283,34 @@ std::optional<std::string> SemanticQuery::hoverText(const ExprAST* node) {
             text += sym->Name + ": ";
             text += (sym->Type ? sym->Type->getName() : "unknown");
             text += "\n```";
-            return text;
+            return HoverInfo{text, varDecl->getNameLoc(), static_cast<int>(varDecl->getName().length())};
         }
     } else if (auto callNode = dynamic_cast<const FuncCallExprAST*>(node)) {
         if (auto target = callNode->getResolvedCallTarget()) {
-            return "```turf\nfn " + target->signature() + "\n```";
+            SourceLocation loc = callNode->getLoc();
+            int len = static_cast<int>(target->BaseName.length());
+            // `Module::func(...)`: the callee is a ScopeAccessExprAST and the
+            // cursor was actually over ITS right-hand name (see
+            // NodeFinderVisitor::visitFuncCall's identical special-case) --
+            // use that name's real span instead of the whole call's Loc.
+            if (auto scopeCallee = dynamic_cast<const ScopeAccessExprAST*>(callNode->getCallee())) {
+                loc = scopeCallee->getRightLoc();
+                len = static_cast<int>(scopeCallee->getRightName().length());
+            } else if (auto varCallee = dynamic_cast<const VariableExprAST*>(callNode->getCallee())) {
+                loc = varCallee->getLoc();
+                len = static_cast<int>(varCallee->getName().length());
+            }
+            return HoverInfo{"```turf\nfn " + target->signature() + "\n```", loc, len};
         }
     } else if (auto fnDef = dynamic_cast<const FuncDefExprAST*>(node)) {
         if (auto target = fnDef->getResolvedDef()) {
-            return "```turf\nfn " + target->signature() + "\n```";
+            return HoverInfo{"```turf\nfn " + target->signature() + "\n```",
+                             fnDef->getNameLoc(), bareNameLength(fnDef->getName())};
         }
     } else if (auto methodNode = dynamic_cast<const MethodCallExprAST*>(node)) {
         if (auto target = methodNode->getResolvedCallTarget()) {
-            return "```turf\nfn " + target->signature() + "\n```";
+            return HoverInfo{"```turf\nfn " + target->signature() + "\n```",
+                             methodNode->getNameLoc(), static_cast<int>(methodNode->getMethod().length())};
         }
     } else if (auto structDecl = dynamic_cast<const StructDeclExprAST*>(node)) {
         std::string text = "```turf\nstruct " + structDecl->getName() + " {\n";
@@ -262,7 +318,52 @@ std::optional<std::string> SemanticQuery::hoverText(const ExprAST* node) {
             text += "    " + field.Name + ": " + (field.Type ? field.Type->getName() : "unknown") + "\n";
         }
         text += "}\n```";
-        return text;
+        return HoverInfo{text, structDecl->getNameLoc(), static_cast<int>(structDecl->getName().length())};
+    } else if (auto fieldAccess = dynamic_cast<const FieldAccessExprAST*>(node)) {
+        // `p.x` -- resolve p's type, then look the field up on it directly
+        // via TurfStructType::getFieldType(), which needs no AST-level
+        // struct-decl lookup (the type system already carries field data).
+        auto baseTy = exprType(fieldAccess->getBase());
+        if (auto st = dynamic_cast<const TurfStructType*>(baseTy.get())) {
+            if (auto fieldTy = st->getFieldType(fieldAccess->getFieldName())) {
+                std::string text = "```turf\n" + fieldAccess->getFieldName() + ": " +
+                                    fieldTy->getName() + "\n```\nfield of `" + st->getName() + "`";
+                return HoverInfo{text, fieldAccess->getNameLoc(),
+                                 static_cast<int>(fieldAccess->getFieldName().length())};
+            }
+        }
+    } else if (auto scopeAccess = dynamic_cast<const ScopeAccessExprAST*>(node)) {
+        // Left::Right is ONE node for both names -- the same node type
+        // NodeFinderVisitor hit-tests both LeftLoc and RightLoc against, so
+        // there's no way to tell which side the cursor is actually over
+        // without redoing that same comparison here.
+        bool onRight = scopeAccess->getRightLoc().Line == cursorLine &&
+                       cursorCol >= scopeAccess->getRightLoc().Col &&
+                       cursorCol < scopeAccess->getRightLoc().Col +
+                                       static_cast<int>(scopeAccess->getRightName().length());
+        if (onRight) {
+            if (scopeAccess->ResolvedKind == ScopeAccessKind::EnumVariant) {
+                std::string text = "`" + scopeAccess->getRightName() +
+                                   "` — variant of enum `" + scopeAccess->getLeftName() + "`";
+                return HoverInfo{text, scopeAccess->getRightLoc(),
+                                 static_cast<int>(scopeAccess->getRightName().length())};
+            }
+            // A static method / module function / module constant / etc:
+            // answering this properly needs a symbol-table lookup hover()
+            // doesn't have access to (no `analysis` parameter) -- return no
+            // hover rather than a guess, per this function's own edge-case
+            // policy (see doc 06's "unresolved node" rule).
+            return std::nullopt;
+        }
+        std::string text = "module `" + scopeAccess->getLeftName() + "`";
+        return HoverInfo{text, scopeAccess->getLeftLoc(),
+                         static_cast<int>(scopeAccess->getLeftName().length())};
+    } else if (auto moduleImport = dynamic_cast<const ModuleImportExprAST*>(node)) {
+        std::string text = "module `" + moduleImport->getModuleName() + "`";
+        if (!moduleImport->getResolvedPath().empty())
+            text += "\n\n" + moduleImport->getResolvedPath();
+        return HoverInfo{text, moduleImport->getNameLoc(),
+                         static_cast<int>(moduleImport->getModuleName().length())};
     }
     return std::nullopt;
 }
