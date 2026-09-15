@@ -6,6 +6,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -72,6 +73,8 @@ private:
     void handleReferences(const json& request);
     void handleDocumentSymbol(const json& request);
     void handleFormatting(const json& request);
+    void handlePrepareRename(const json& request);
+    void handleRename(const json& request);
     void handleSemanticTokens(const json& request);
     void handleSemanticTokensDelta(const json& request);
 
@@ -90,6 +93,34 @@ private:
     void doDocumentSymbol(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doFormatting(json id, std::string uri, bool insertSpaces, int tabSize,
                        std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doPrepareRename(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doRename(json id, std::string uri, LspPosition pos, std::string newName,
+                  std::shared_ptr<std::atomic<bool>> cancelFlag);
+
+    // A single occurrence of the symbol a references/rename request is
+    // asking about, already resolved to the file it was found in --
+    // shared by doReferences() and doRename() (rename IS find-references
+    // + text replacement, doc 10's own framing) so the workspace-scanning
+    // logic (candidate file enumeration, per-file fresh-vs-cached
+    // analysis, cross-file module-to-path resolution) exists in exactly
+    // one place.
+    struct FoundOccurrence {
+        std::string uri;
+        SourceLocation loc;
+        int length;
+        bool isDeclaration;
+    };
+    // Returns nullopt if the position doesn't resolve to a renameable/
+    // referenceable symbol at all (caller should respond accordingly);
+    // the vector is empty only if resolution succeeded but scanning found
+    // literally nothing (shouldn't normally happen -- the declaration
+    // itself should always be found). Sets `outCancelled` and returns
+    // nullopt if a cancellation was observed mid-scan; the caller is
+    // responsible for having already sent (or now sending) the
+    // `-32800` error in that case, this helper does not send responses
+    // itself.
+    std::optional<std::vector<FoundOccurrence>> collectWorkspaceOccurrences(
+        const std::string& uri, LspPosition pos, const std::function<bool()>& cancelled, bool& outCancelled);
     void doSemanticTokens(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doSemanticTokensDelta(json id, std::string uri, std::string previousResultId,
                                 std::shared_ptr<std::atomic<bool>> cancelFlag);

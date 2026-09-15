@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -303,6 +304,8 @@ void LSPHandler::dispatch(const json& msg) {
     if (method == "textDocument/references") { handleReferences(msg); return; }
     if (method == "textDocument/documentSymbol") { handleDocumentSymbol(msg); return; }
     if (method == "textDocument/formatting") { handleFormatting(msg); return; }
+    if (method == "textDocument/prepareRename") { handlePrepareRename(msg); return; }
+    if (method == "textDocument/rename") { handleRename(msg); return; }
     if (method == "textDocument/semanticTokens/full") { handleSemanticTokens(msg); return; }
     if (method == "textDocument/semanticTokens/full/delta") { handleSemanticTokensDelta(msg); return; }
 
@@ -361,6 +364,7 @@ void LSPHandler::handleInitialize(const json& request) {
             {"referencesProvider", true},
             {"documentSymbolProvider", true},
             {"documentFormattingProvider", true},
+            {"renameProvider", {{"prepareProvider", true}}},
             {"semanticTokensProvider", {
                 {"legend", {
                     {"tokenTypes", {"variable", "function", "keyword", "type", "parameter", "struct", "string", "number", "operator", "namespace", "property", "enumMember", "method"}},
@@ -615,6 +619,31 @@ void LSPHandler::handleFormatting(const json& request) {
     auto cancelFlag = registerCancellable(id);
     enqueueWork([this, id, uri, insertSpaces, tabSize, cancelFlag]() {
         doFormatting(id, uri, insertSpaces, tabSize, cancelFlag);
+    });
+}
+
+void LSPHandler::handlePrepareRename(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    auto position = params.value("position", json::object());
+    LspPosition pos{position.value("line", 0), position.value("character", 0)};
+
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, pos, cancelFlag]() { doPrepareRename(id, uri, pos, cancelFlag); });
+}
+
+void LSPHandler::handleRename(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    auto position = params.value("position", json::object());
+    LspPosition pos{position.value("line", 0), position.value("character", 0)};
+    std::string newName = params.value("newName", "");
+
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, pos, newName, cancelFlag]() {
+        doRename(id, uri, pos, newName, cancelFlag);
     });
 }
 
@@ -1085,8 +1114,179 @@ void LSPHandler::doDocumentHighlight(json id, std::string uri, LspPosition pos, 
 // a full per-request scan instead, which the plan doc itself calls out as
 // "fine for typical project sizes" pending real dogfooding evidence it
 // isn't.
+std::optional<std::vector<LSPHandler::FoundOccurrence>> LSPHandler::collectWorkspaceOccurrences(
+    const std::string& uri, LspPosition pos, const std::function<bool()>& cancelled, bool& outCancelled) {
+    outCancelled = false;
+    if (!m_documents.contains(uri)) return std::nullopt;
+
+    auto analysis = ensureFreshAnalysis(uri, cancelled);
+    if (cancelled()) { outCancelled = true; return std::nullopt; }
+    if (!analysis) return std::nullopt;
+
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) return std::nullopt;
+
+    PositionMapper mapper(textSnap->text, m_positionEncoding);
+    int compLine, compCol;
+    mapper.toCompilerLineCol(pos, compLine, compCol);
+
+    const ExprAST* node = SemanticQuery::findNodeAt(*analysis, compLine, compCol);
+    if (!node) return std::nullopt;
+    auto target = SemanticQuery::getDeclarationLoc(node);
+    if (!target || target->loc.Line <= 0) return std::nullopt;
+
+    // Resolve the target's own module to an absolute path ONCE, against
+    // the document the reference request originated in -- correct for
+    // every stdlib/usr-package target (steps 1-2 of ResolveModuleFile()'s
+    // search order don't depend on the importing file at all) and for a
+    // same-directory local-module target reached from a file in that same
+    // directory; a target resolved only through some OTHER file's own
+    // relative-directory step is the one case this can disagree with,
+    // accepted as a known edge case rather than re-resolving per scanned
+    // file (which would need each file's own import of the target to
+    // already be known, a chicken-and-egg problem this simpler model
+    // avoids).
+    std::string docPath = uriToPath(uri);
+    std::string targetFilePath = target->moduleName.empty() ? docPath
+                                                              : ResolveModuleFile(target->moduleName, docPath);
+    if (targetFilePath.empty()) return std::nullopt;
+
+    // Scan candidates: every workspace-indexed file, plus the target's own
+    // declaring file and the current document (a target declared in a
+    // file the WorkspaceIndex didn't enumerate -- e.g. outside every
+    // workspace folder, or the index hasn't rescanned yet -- must still be
+    // searched, since it's the one file GUARANTEED to contain at least the
+    // declaration itself).
+    std::vector<std::string> candidates = m_workspaceIndex.files();
+    candidates.push_back(docPath);
+    candidates.push_back(targetFilePath);
+    std::sort(candidates.begin(), candidates.end());
+    candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+
+    std::vector<FoundOccurrence> results;
+    for (const auto& candidatePath : candidates) {
+        if (cancelled()) { outCancelled = true; return std::nullopt; }
+
+        const DocumentAnalysis* candidateAnalysis = nullptr;
+        std::shared_ptr<const DocumentAnalysis> freshAnalysis; // keeps a fresh analyze() alive for this iteration
+        std::string candidateUri = pathToUri(candidatePath);
+        std::string candidateText;
+
+        if (candidatePath == docPath) {
+            candidateAnalysis = analysis.get();
+            candidateText = textSnap->text;
+        } else if (auto openSnap = m_documents.getText(candidateUri)) {
+            // Already open in the editor -- reuse the live buffer's own
+            // fresh analysis instead of re-reading it off disk stale.
+            auto openAnalysis = ensureFreshAnalysis(candidateUri, cancelled);
+            if (cancelled()) { outCancelled = true; return std::nullopt; }
+            if (!openAnalysis) continue;
+            freshAnalysis = openAnalysis;
+            candidateAnalysis = openAnalysis.get();
+            candidateText = openSnap->text;
+        } else {
+            std::ifstream f(candidatePath);
+            if (!f) continue;
+            std::stringstream buf;
+            buf << f.rdbuf();
+            candidateText = buf.str();
+            auto analyzed = m_compiler.analyze(candidateText, candidatePath, cancelled);
+            if (cancelled()) { outCancelled = true; return std::nullopt; }
+            if (!analyzed) continue;
+            freshAnalysis = std::shared_ptr<const DocumentAnalysis>(std::move(analyzed));
+            candidateAnalysis = freshAnalysis.get();
+        }
+
+        auto occurrences = SemanticQuery::findAllReferenceOccurrences(*candidateAnalysis);
+        if (occurrences.empty()) continue;
+
+        for (const auto& occ : occurrences) {
+            if (occ.declLoc.Line != target->loc.Line || occ.declLoc.Col != target->loc.Col) continue;
+            std::string occDeclFilePath = occ.declModule.empty() ? candidatePath
+                                                                   : ResolveModuleFile(occ.declModule, candidatePath);
+            if (occDeclFilePath != targetFilePath) continue;
+
+            results.push_back({candidateUri, occ.loc, occ.length, occ.isDeclaration});
+        }
+    }
+    return results;
+}
+
+// doc 08 P3.5: workspace-wide references, now a thin wrapper over
+// collectWorkspaceOccurrences() (shared with doRename() -- rename IS
+// find-references + text replacement, see that function's own comment).
 void LSPHandler::doReferences(json id, std::string uri, LspPosition pos, bool includeDeclaration,
                                std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+
+    bool wasCancelled = false;
+    auto found = collectWorkspaceOccurrences(uri, pos, cancelled, wasCancelled);
+    if (wasCancelled) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!found) { sendResponse(id, json::array()); return; }
+
+    json locations = json::array();
+    for (const auto& occ : *found) {
+        if (!includeDeclaration && occ.isDeclaration) continue;
+        std::string text;
+        if (occ.uri == uri) {
+            if (auto snap = m_documents.getText(uri)) text = snap->text;
+        } else if (auto openSnap = m_documents.getText(occ.uri)) {
+            text = openSnap->text;
+        } else {
+            std::ifstream f(uriToPath(occ.uri));
+            if (f) { std::stringstream buf; buf << f.rdbuf(); text = buf.str(); }
+        }
+        if (text.empty()) continue;
+        PositionMapper occMapper(text, m_positionEncoding);
+        locations.push_back({
+            {"uri", occ.uri},
+            {"range", jsonRange(occMapper.toLspRange(occ.loc.Line, occ.loc.Col, occ.length))}
+        });
+    }
+    sendResponse(id, locations);
+}
+
+namespace {
+// Identifiers Turf reserves or that would break code if used as a rename
+// target -- keywords (same list SemanticQuery.cpp's Bare-word completion
+// branch already offers, kept in sync by hand rather than sharing a
+// single source since the two live in different translation units for
+// different reasons) plus primitive type names and the 3 literal
+// keywords, none of which classifyTrigger's completion needs to flag
+// specially but a rename absolutely must reject.
+bool isReservedForRename(const std::string& name) {
+    static const std::set<std::string> reserved = {
+        "fn", "mut", "immut", "struct", "extern", "from", "import", "export",
+        "static", "if", "elseif", "else", "while", "for", "in", "step",
+        "give", "otherwise", "break", "continue", "return", "to", "enum",
+        "true", "false", "null", "self", "operator", "error", "recover",
+        "produce", "run", "as", "do", "compare", "matches", "done",
+        "int", "int32", "double", "bool", "string", "char", "ptr", "void"
+    };
+    return reserved.count(name) > 0;
+}
+
+bool isValidIdentifier(const std::string& name) {
+    if (name.empty()) return false;
+    if (!std::isalpha(static_cast<unsigned char>(name[0])) && name[0] != '_') return false;
+    for (char c : name) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') return false;
+    }
+    return true;
+}
+} // namespace
+
+// doc 10 P4.1: prepareRename -- validity check + the exact renameable
+// range, reusing hover()'s per-node-kind span computation for its
+// .loc/.length exactly like buildDefinitionResult()'s originSelectionRange
+// does (doc 07), rather than a third dynamic_cast chain answering the same
+// "what's the span of the thing under the cursor" question.
+void LSPHandler::doPrepareRename(json id, std::string uri, LspPosition pos,
+                                  std::shared_ptr<std::atomic<bool>> cancelFlag) {
     std::string idKey = id.dump();
     ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
 
@@ -1106,90 +1306,114 @@ void LSPHandler::doReferences(json id, std::string uri, LspPosition pos, bool in
     mapper.toCompilerLineCol(pos, compLine, compCol);
 
     const ExprAST* node = SemanticQuery::findNodeAt(*analysis, compLine, compCol);
-    if (!node) { sendResponse(id, json::array()); return; }
-    auto target = SemanticQuery::getDeclarationLoc(node);
-    if (!target || target->loc.Line <= 0) { sendResponse(id, json::array()); return; }
-
-    // Resolve the target's own module to an absolute path ONCE, against
-    // the document the reference request originated in -- correct for
-    // every stdlib/usr-package target (steps 1-2 of ResolveModuleFile()'s
-    // search order don't depend on the importing file at all) and for a
-    // same-directory local-module target reached from a file in that same
-    // directory; a target resolved only through some OTHER file's own
-    // relative-directory step is the one case this can disagree with,
-    // accepted as a known edge case rather than re-resolving per scanned
-    // file (which would need each file's own import of the target to
-    // already be known, a chicken-and-egg problem this simpler model
-    // avoids).
-    std::string docPath = uriToPath(uri);
-    std::string targetFilePath = target->moduleName.empty() ? docPath
-                                                              : ResolveModuleFile(target->moduleName, docPath);
-    if (targetFilePath.empty()) { sendResponse(id, json::array()); return; }
-
-    // Scan candidates: every workspace-indexed file, plus the target's own
-    // declaring file and the current document (a target declared in a
-    // file the WorkspaceIndex didn't enumerate -- e.g. outside every
-    // workspace folder, or the index hasn't rescanned yet -- must still be
-    // searched, since it's the one file GUARANTEED to contain at least the
-    // declaration itself).
-    std::vector<std::string> candidates = m_workspaceIndex.files();
-    candidates.push_back(docPath);
-    candidates.push_back(targetFilePath);
-    std::sort(candidates.begin(), candidates.end());
-    candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
-
-    json locations = json::array();
-    for (const auto& candidatePath : candidates) {
-        if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
-
-        const DocumentAnalysis* candidateAnalysis = nullptr;
-        std::shared_ptr<const DocumentAnalysis> freshAnalysis; // keeps a fresh analyze() alive for this iteration
-        std::string candidateUri = pathToUri(candidatePath);
-        std::string candidateText;
-
-        if (candidatePath == docPath) {
-            candidateAnalysis = analysis.get();
-            candidateText = textSnap->text;
-        } else if (auto openSnap = m_documents.getText(candidateUri)) {
-            // Already open in the editor -- reuse the live buffer's own
-            // fresh analysis instead of re-reading it off disk stale.
-            auto openAnalysis = ensureFreshAnalysis(candidateUri, cancelled);
-            if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
-            if (!openAnalysis) continue;
-            freshAnalysis = openAnalysis;
-            candidateAnalysis = openAnalysis.get();
-            candidateText = openSnap->text;
-        } else {
-            std::ifstream f(candidatePath);
-            if (!f) continue;
-            std::stringstream buf;
-            buf << f.rdbuf();
-            candidateText = buf.str();
-            auto analyzed = m_compiler.analyze(candidateText, candidatePath, cancelled);
-            if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
-            if (!analyzed) continue;
-            freshAnalysis = std::shared_ptr<const DocumentAnalysis>(std::move(analyzed));
-            candidateAnalysis = freshAnalysis.get();
-        }
-
-        auto occurrences = SemanticQuery::findAllReferenceOccurrences(*candidateAnalysis);
-        if (occurrences.empty()) continue;
-
-        PositionMapper candidateMapper(candidateText, m_positionEncoding);
-        for (const auto& occ : occurrences) {
-            if (occ.declLoc.Line != target->loc.Line || occ.declLoc.Col != target->loc.Col) continue;
-            if (!includeDeclaration && occ.isDeclaration) continue;
-            std::string occDeclFilePath = occ.declModule.empty() ? candidatePath
-                                                                   : ResolveModuleFile(occ.declModule, candidatePath);
-            if (occDeclFilePath != targetFilePath) continue;
-
-            locations.push_back({
-                {"uri", candidateUri},
-                {"range", jsonRange(candidateMapper.toLspRange(occ.loc.Line, occ.loc.Col, occ.length))}
-            });
+    json result = nullptr;
+    if (node) {
+        auto target = SemanticQuery::getDeclarationLoc(node);
+        // Reject: unresolved (typo/mid-edit), a builtin/synthetic decl
+        // ({0,0} -- assert, primitive-type methods, ...), or a stdlib
+        // symbol (doc 10's own stdlib guard -- the user can't
+        // meaningfully edit lib/std, and a stdlib rename would desync
+        // the toolchain).
+        if (target && target->loc.Line > 0) {
+            std::string docPath = uriToPath(uri);
+            std::string targetFilePath = target->moduleName.empty()
+                                              ? docPath
+                                              : ResolveModuleFile(target->moduleName, docPath);
+            if (!targetFilePath.empty() && !IsPathUnderLibStd(targetFilePath)) {
+                if (auto info = SemanticQuery::hover(*analysis, node, compLine, compCol)) {
+                    if (info->length > 0) {
+                        result = jsonRange(mapper.toLspRange(info->loc.Line, info->loc.Col, info->length));
+                    }
+                }
+            }
         }
     }
-    sendResponse(id, locations);
+    sendResponse(id, result);
+}
+
+// doc 10 P4.2: rename -- find-references (via the same
+// collectWorkspaceOccurrences() doReferences() uses) + text replacement,
+// with the safety checks doc 10 calls out explicitly: `newName` must be a
+// legal identifier and not a reserved keyword/type name; same-name
+// rename is a no-op; stdlib symbols are refused. Deliberately NOT
+// implemented: the deeper "would newName collide with an existing
+// declaration visible in any affected scope" conflict check doc 10 also
+// wants -- that needs a real per-scope visibility query this session's
+// identity model (declLoc + module) doesn't answer, a meaningfully
+// bigger feature than the rest of this function; left for future work
+// rather than attempted as a shortcut that could silently rename INTO a
+// collision.
+void LSPHandler::doRename(json id, std::string uri, LspPosition pos, std::string newName,
+                           std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+
+    if (!isValidIdentifier(newName)) {
+        sendError(id, -32602, "'" + newName + "' is not a valid Turf identifier");
+        return;
+    }
+    if (isReservedForRename(newName)) {
+        sendError(id, -32602, "'" + newName + "' is a reserved keyword/type name and can't be used as an identifier");
+        return;
+    }
+
+    // Re-derive the target's own file (same logic doPrepareRename uses)
+    // for the stdlib guard -- collectWorkspaceOccurrences() doesn't
+    // expose the target's own path, only the occurrences it found.
+    {
+        if (!m_documents.contains(uri)) { sendError(id, -32801, "Content modified"); return; }
+        auto analysis = ensureFreshAnalysis(uri, cancelled);
+        if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+        if (!analysis) { sendResponse(id, nullptr); return; }
+        auto textSnap = m_documents.getText(uri);
+        if (!textSnap) { sendError(id, -32801, "Content modified"); return; }
+        PositionMapper mapper(textSnap->text, m_positionEncoding);
+        int compLine, compCol;
+        mapper.toCompilerLineCol(pos, compLine, compCol);
+        const ExprAST* node = SemanticQuery::findNodeAt(*analysis, compLine, compCol);
+        if (!node) { sendResponse(id, nullptr); return; }
+        auto target = SemanticQuery::getDeclarationLoc(node);
+        if (!target || target->loc.Line <= 0) { sendResponse(id, nullptr); return; }
+        std::string docPath = uriToPath(uri);
+        std::string targetFilePath = target->moduleName.empty() ? docPath
+                                                                  : ResolveModuleFile(target->moduleName, docPath);
+        if (targetFilePath.empty() || IsPathUnderLibStd(targetFilePath)) {
+            sendError(id, -32602, "Renaming a standard-library symbol isn't supported");
+            return;
+        }
+    }
+
+    bool wasCancelled = false;
+    auto found = collectWorkspaceOccurrences(uri, pos, cancelled, wasCancelled);
+    if (wasCancelled) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!found || found->empty()) { sendResponse(id, nullptr); return; }
+
+    // Group by uri, build one TextEdit per occurrence.
+    std::map<std::string, json> editsByUri;
+    for (const auto& occ : *found) {
+        std::string text;
+        if (auto openSnap = m_documents.getText(occ.uri)) {
+            text = openSnap->text;
+        } else {
+            std::ifstream f(uriToPath(occ.uri));
+            if (f) { std::stringstream buf; buf << f.rdbuf(); text = buf.str(); }
+        }
+        if (text.empty()) continue;
+        PositionMapper occMapper(text, m_positionEncoding);
+        json edit = {
+            {"range", jsonRange(occMapper.toLspRange(occ.loc.Line, occ.loc.Col, occ.length))},
+            {"newText", newName}
+        };
+        if (!editsByUri.count(occ.uri)) editsByUri[occ.uri] = json::array();
+        editsByUri[occ.uri].push_back(std::move(edit));
+    }
+
+    json changes = json::object();
+    for (auto& [editUri, edits] : editsByUri) changes[editUri] = std::move(edits);
+    sendResponse(id, {{"changes", changes}});
 }
 
 // doc 08 P3.6 (bonus): a flat outline of the current file's top-level
