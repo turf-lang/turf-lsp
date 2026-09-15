@@ -61,6 +61,12 @@ private:
     void handleCompletion(const json& request);
     void handleHover(const json& request);
     void handleDefinition(const json& request);
+    // `declaration` reuses doDefinition() verbatim as its work body -- for
+    // turf-lang, declaration and definition coincide for every symbol kind
+    // doDefinition() currently resolves (no separate extern-decl split
+    // implemented yet; see doTypeDefinition's sibling doc comment).
+    void handleDeclaration(const json& request);
+    void handleTypeDefinition(const json& request);
     void handleSemanticTokens(const json& request);
     void handleSemanticTokensDelta(const json& request);
 
@@ -68,6 +74,7 @@ private:
     void doCompletion(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doHover(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doDefinition(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doTypeDefinition(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doSemanticTokens(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doSemanticTokensDelta(json id, std::string uri, std::string previousResultId,
                                 std::shared_ptr<std::atomic<bool>> cancelFlag);

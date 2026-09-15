@@ -80,6 +80,17 @@ public:
     // along with the module name if it's imported.
     static std::optional<SymbolLocation> getDeclarationLoc(const ExprAST* node);
 
+    // textDocument/typeDefinition: from a variable/expression to the
+    // declaration of its *type* (struct or enum), not the variable itself.
+    // Needs `analysis` (not just the node) to build the struct/enum-name ->
+    // decl-location index, including names declared in transitively
+    // imported modules (walked via each ModuleImportExprAST's already-
+    // parsed getBody(), no re-analysis of the target file needed). Returns
+    // the module name the type is owned by ("" for the current file), same
+    // shape as getDeclarationLoc(), for the caller to resolve a target URI.
+    static std::optional<SymbolLocation> getTypeDefinitionLoc(const DocumentAnalysis& analysis,
+                                                               const ExprAST* node);
+
     // Formats a hover tooltip (+ its own source range) for the symbol
     // referenced by `node`. `cursorLine`/`cursorCol` (1-indexed, same as
     // findNodeAt) are needed only to disambiguate a ScopeAccessExprAST's two

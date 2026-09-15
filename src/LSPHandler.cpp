@@ -206,6 +206,8 @@ void LSPHandler::dispatch(const json& msg) {
     if (method == "textDocument/completion") { handleCompletion(msg); return; }
     if (method == "textDocument/hover") { handleHover(msg); return; }
     if (method == "textDocument/definition") { handleDefinition(msg); return; }
+    if (method == "textDocument/declaration") { handleDeclaration(msg); return; }
+    if (method == "textDocument/typeDefinition") { handleTypeDefinition(msg); return; }
     if (method == "textDocument/semanticTokens/full") { handleSemanticTokens(msg); return; }
     if (method == "textDocument/semanticTokens/full/delta") { handleSemanticTokensDelta(msg); return; }
 
@@ -255,6 +257,8 @@ void LSPHandler::handleInitialize(const json& request) {
             }},
             {"hoverProvider", true},
             {"definitionProvider", true},
+            {"declarationProvider", true},
+            {"typeDefinitionProvider", true},
             {"semanticTokensProvider", {
                 {"legend", {
                     {"tokenTypes", {"variable", "function", "keyword", "type", "parameter", "struct", "string", "number", "operator", "namespace", "property", "enumMember", "method"}},
@@ -425,6 +429,31 @@ void LSPHandler::handleDefinition(const json& request) {
 
     auto cancelFlag = registerCancellable(id);
     enqueueWork([this, id, uri, pos, cancelFlag]() { doDefinition(id, uri, pos, cancelFlag); });
+}
+
+void LSPHandler::handleDeclaration(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    auto position = params.value("position", json::object());
+    LspPosition pos{position.value("line", 0), position.value("character", 0)};
+
+    auto cancelFlag = registerCancellable(id);
+    // Reuses doDefinition() directly -- see this method's doc comment in
+    // LSPHandler.hpp for why that's correct for every symbol kind resolved
+    // today.
+    enqueueWork([this, id, uri, pos, cancelFlag]() { doDefinition(id, uri, pos, cancelFlag); });
+}
+
+void LSPHandler::handleTypeDefinition(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    auto position = params.value("position", json::object());
+    LspPosition pos{position.value("line", 0), position.value("character", 0)};
+
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, pos, cancelFlag]() { doTypeDefinition(id, uri, pos, cancelFlag); });
 }
 
 void LSPHandler::handleSemanticTokens(const json& request) {
@@ -736,6 +765,73 @@ void LSPHandler::doDefinition(json id, std::string uri, LspPosition pos, std::sh
                 } else {
                     range.start = {declLocOpt->loc.Line - 1, declLocOpt->loc.Col - 1};
                     range.end = {declLocOpt->loc.Line - 1, declLocOpt->loc.Col};
+                }
+                result = {
+                    {"uri", targetUri},
+                    {"range", {
+                        {"start", {{"line", range.start.line}, {"character", range.start.character}}},
+                        {"end", {{"line", range.end.line}, {"character", range.end.character}}}
+                    }}
+                };
+            }
+        }
+    }
+    sendResponse(id, result);
+}
+
+// Same shape as doDefinition() above -- only the query (getTypeDefinitionLoc
+// instead of getDeclarationLoc) and the range width differ. Kept as its own
+// function rather than a shared helper parameterized on the query: the two
+// are similar today but doc 07 expects them to diverge further (declaration
+// vs. definition's extern-decl split doesn't apply here at all; typeDefinition
+// has its own edge cases -- e.g. a builtin/primitive type has no decl node to
+// find, already handled by getTypeDefinitionLoc() returning nullopt for it).
+void LSPHandler::doTypeDefinition(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!m_documents.contains(uri)) { sendError(id, -32801, "Content modified"); return; }
+
+    auto analysis = ensureFreshAnalysis(uri, cancelled);
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!analysis) { sendResponse(id, nullptr); return; }
+
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) { sendError(id, -32801, "Content modified"); return; }
+
+    PositionMapper mapper(textSnap->text, m_positionEncoding);
+    int compLine, compCol;
+    mapper.toCompilerLineCol(pos, compLine, compCol);
+
+    json result = nullptr;
+    const ExprAST* node = SemanticQuery::findNodeAt(*analysis, compLine, compCol);
+    if (node) {
+        auto typeLocOpt = SemanticQuery::getTypeDefinitionLoc(*analysis, node);
+        if (typeLocOpt && typeLocOpt->loc.Line > 0) {
+            std::string targetUri = uri;
+            bool haveTarget = true;
+
+            // Same cross-file resolution as doDefinition() -- see its
+            // identical comment above for the stdlib-subfolder rationale.
+            if (!typeLocOpt->moduleName.empty()) {
+                std::string docPath = uriToPath(uri);
+                std::string resolved = ResolveModuleFile(typeLocOpt->moduleName, docPath);
+                if (!resolved.empty()) {
+                    targetUri = "file://" + resolved;
+                } else {
+                    haveTarget = false;
+                }
+            }
+
+            if (haveTarget) {
+                LspRange range;
+                if (targetUri == uri) {
+                    range = mapper.toLspRange(typeLocOpt->loc.Line, typeLocOpt->loc.Col, 1);
+                } else {
+                    range.start = {typeLocOpt->loc.Line - 1, typeLocOpt->loc.Col - 1};
+                    range.end = {typeLocOpt->loc.Line - 1, typeLocOpt->loc.Col};
                 }
                 result = {
                     {"uri", targetUri},

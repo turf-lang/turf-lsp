@@ -371,6 +371,91 @@ std::optional<HoverInfo> SemanticQuery::hover(const ExprAST* node, int cursorLin
     return std::nullopt;
 }
 
+namespace {
+// Indexes every struct/enum NAME visible from the top level of a document
+// -- declared directly, or in any transitively-imported module -- to its
+// declaration location and owning module name (mirrors
+// ResolverTypeRegistry's own flat, module-blind struct/enum namespace on
+// the compiler side, but built from the already-parsed AST instead of
+// needing a new query surface there: an imported module's full AST is
+// already sitting in its ModuleImportExprAST::getBody(), so no re-analysis
+// of the target file is needed). First declaration of a name wins (structs
+///enums share ONE flat namespace, so a genuine same-name collision across
+// modules is itself a compile error the Resolver already reports).
+class TypeDeclIndexVisitor : public ASTVisitor {
+public:
+    struct Entry { SourceLocation loc; std::string moduleName; };
+    std::unordered_map<std::string, Entry> types;
+
+    void visitStructDecl(StructDeclExprAST &Node) override {
+        types.emplace(Node.getName(), Entry{Node.getNameLoc(), currentModule});
+    }
+    // EnumDeclExprAST has no separate NameLoc (unlike StructDeclExprAST --
+    // it predates issue #230's name-location fix), so this lands on the
+    // `enum` keyword rather than the name itself -- still a correct jump
+    // target, just a less precise one than the struct case.
+    void visitEnumDecl(EnumDeclExprAST &Node) override {
+        types.emplace(Node.getName(), Entry{Node.getLoc(), currentModule});
+    }
+    void visitModuleImport(ModuleImportExprAST &Node) override {
+        if (!Node.getBody()) return;
+        std::string saved = currentModule;
+        currentModule = Node.getModuleName();
+        const_cast<ExprAST*>(Node.getBody())->accept(*this);
+        currentModule = saved;
+    }
+    // A module's body is a single BlockExprAST wrapping its own top-level
+    // statements (structs, fns, nested imports, ...) -- without this
+    // override the default (no-op) ASTVisitor base swallows the whole
+    // import's contents, exactly the bug DocumentIndexVisitor's identical
+    // override (above) already works around for completion.
+    void visitBlock(BlockExprAST &Node) override {
+        for (const auto& e : Node.getExpressions())
+            if (e) const_cast<ExprAST*>(e.get())->accept(*this);
+    }
+private:
+    std::string currentModule; // "" while walking the top-level file itself
+};
+} // namespace
+
+std::optional<SymbolLocation> SemanticQuery::getTypeDefinitionLoc(const DocumentAnalysis& analysis,
+                                                                   const ExprAST* node) {
+    auto ty = exprType(node);
+    if (!ty) {
+        // exprType() only understands VariableExprAST/FieldAccessExprAST/
+        // MethodCallExprAST/FuncCallExprAST as a base -- a bare VarDeclExprAST
+        // (the declaration site itself, not a use) carries its type directly
+        // on the resolved symbol instead.
+        if (auto varDecl = dynamic_cast<const VarDeclExprAST*>(node)) {
+            if (auto sym = varDecl->getResolvedSymbol()) ty = sym->Type;
+        }
+    }
+    if (!ty) return std::nullopt;
+
+    TypeDeclIndexVisitor indexer;
+    // Skip the synthetic prelude imports (DocumentAnalysis::
+    // preludeImportCount): walking them is harmless (no position collision
+    // concern here, unlike semantic tokens), but there's nothing worth
+    // finding inside them for THIS lookup either -- omitted for clarity.
+    for (size_t i = analysis.preludeImportCount; i < analysis.asts.size(); ++i) {
+        if (analysis.asts[i]) const_cast<ExprAST*>(analysis.asts[i].get())->accept(indexer);
+    }
+
+    // A generic instantiation's getName() includes its type arguments
+    // (e.g. "List<int>" for GenericType), but the decl index is keyed by
+    // the bare declared name ("List", from StructDeclExprAST::getName(),
+    // which never includes TypeParams -- those are tracked separately via
+    // getTypeParams()) -- strip everything from the first '<' before
+    // looking up.
+    std::string typeName = ty->getName();
+    if (auto lt = typeName.find('<'); lt != std::string::npos) typeName.resize(lt);
+
+    auto it = indexer.types.find(typeName);
+    if (it == indexer.types.end()) return std::nullopt;
+    ResolverSourceLocation loc{it->second.loc.Line, it->second.loc.Col};
+    return SymbolLocation{loc, it->second.moduleName};
+}
+
 class SemanticTokensVisitor : public ASTVisitor {
 public:
     std::vector<SemanticToken> tokens;
