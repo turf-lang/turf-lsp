@@ -278,10 +278,16 @@ public:
 
     void visitVariable(VariableExprAST &Node) override {
         int modifiers = 0;
+        SemanticTokenType type = SemanticTokenType::Variable;
         if (auto sym = Node.getResolvedSymbol()) {
             if (sym->IsImmutable) modifiers |= static_cast<int>(SemanticTokenModifier::Readonly);
+            // A parameter is just a pre-bound local (see VariableSymbol::
+            // IsParameter's doc comment in turf-lang) -- color its USES
+            // distinctly from an ordinary local, matching the Parameter
+            // token already emitted at its declaration site in visitFuncDef.
+            if (sym->IsParameter) type = SemanticTokenType::Parameter;
         }
-        addToken(Node.getLoc(), Node.getName().length(), SemanticTokenType::Variable, modifiers);
+        addToken(Node.getLoc(), Node.getName().length(), type, modifiers);
     }
     
     void visitVarDecl(VarDeclExprAST &Node) override {
@@ -290,6 +296,16 @@ public:
             modifiers |= static_cast<int>(SemanticTokenModifier::Readonly);
         }
         addToken(Node.getNameLoc(), Node.getName().length(), SemanticTokenType::Variable, modifiers);
+        // Type annotation (`: int` in `mut x: int = 5;`) -- turf-lang's
+        // parser started recording this span on VarDeclExprAST specifically
+        // so tooling could color it (TurfType itself has no source location
+        // of its own; see VarDeclExprAST::TypeLoc's doc comment). Length is
+        // the type's rendered name, which matches source for every type this
+        // can currently be (primitives, struct/enum names, generics written
+        // out in full like `List<int>` -- there's no shorthand spelling that
+        // could disagree with getName()).
+        if (Node.getType())
+            addToken(Node.getTypeLoc(), Node.getType()->getName().length(), SemanticTokenType::Type);
         if (Node.getInitializer()) {
             const_cast<ExprAST*>(Node.getInitializer())->accept(*this);
         }
@@ -298,6 +314,15 @@ public:
     void visitFuncDef(FuncDefExprAST &Node) override {
         int modifiers = static_cast<int>(SemanticTokenModifier::Declaration);
         addToken(Node.getNameLoc(), bareNameLength(Node.getName()), SemanticTokenType::Function, modifiers);
+        // Parameters: name as Parameter, declared type as Type. Skips the
+        // synthetic 'self' param automatically -- its Loc/TypeLoc are both
+        // the default {0,0} (see ParamDecl's doc comment), and addToken()
+        // already guards `loc.Line > 0`.
+        for (const auto &Param : Node.getParams()) {
+            addToken(Param.Loc, Param.Name.length(), SemanticTokenType::Parameter);
+            if (Param.Type)
+                addToken(Param.TypeLoc, Param.Type->getName().length(), SemanticTokenType::Type);
+        }
         if (Node.getBodyMut()) const_cast<ExprAST*>(Node.getBodyMut())->accept(*this);
     }
     
@@ -384,12 +409,21 @@ public:
         if (Node.getOtherBody()) const_cast<ExprAST*>(Node.getOtherBody())->accept(*this);
     }
 
-    // Struct name at its declaration site. Field types aren't separate
-    // ExprAST nodes (StructField is a plain name+TurfTypePtr pair), so
-    // there's nothing further to recurse into here.
+    // Struct name at its declaration site, plus each field's own name
+    // (Property, declaration) and declared type (Type). Field types aren't
+    // separate ExprAST nodes -- StructField is a plain name+TurfTypePtr
+    // pair -- but it now also carries NameLoc/TypeLoc spans (turf-lang
+    // added these specifically for this), so there's real data to emit
+    // here even without a node to recurse into.
     void visitStructDecl(StructDeclExprAST &Node) override {
         addToken(Node.getNameLoc(), Node.getName().length(), SemanticTokenType::Struct,
                  static_cast<int>(SemanticTokenModifier::Declaration));
+        for (const auto &Field : Node.getFields()) {
+            addToken(Field.NameLoc, Field.Name.length(), SemanticTokenType::Property,
+                     static_cast<int>(SemanticTokenModifier::Declaration));
+            if (Field.Type)
+                addToken(Field.TypeLoc, Field.Type->getName().length(), SemanticTokenType::Type);
+        }
     }
 
     // Base.field -- Base gets whatever token its own shape implies (variable,
