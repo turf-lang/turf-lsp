@@ -75,6 +75,7 @@ private:
     void handleFormatting(const json& request);
     void handlePrepareRename(const json& request);
     void handleRename(const json& request);
+    void handleCodeAction(const json& request);
     void handleSemanticTokens(const json& request);
     void handleSemanticTokensDelta(const json& request);
 
@@ -96,6 +97,8 @@ private:
     void doPrepareRename(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doRename(json id, std::string uri, LspPosition pos, std::string newName,
                   std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doCodeAction(json id, std::string uri, json diagnostics,
+                       std::shared_ptr<std::atomic<bool>> cancelFlag);
 
     // A single occurrence of the symbol a references/rename request is
     // asking about, already resolved to the file it was found in --

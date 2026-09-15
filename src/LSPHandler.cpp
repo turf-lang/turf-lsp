@@ -306,6 +306,7 @@ void LSPHandler::dispatch(const json& msg) {
     if (method == "textDocument/formatting") { handleFormatting(msg); return; }
     if (method == "textDocument/prepareRename") { handlePrepareRename(msg); return; }
     if (method == "textDocument/rename") { handleRename(msg); return; }
+    if (method == "textDocument/codeAction") { handleCodeAction(msg); return; }
     if (method == "textDocument/semanticTokens/full") { handleSemanticTokens(msg); return; }
     if (method == "textDocument/semanticTokens/full/delta") { handleSemanticTokensDelta(msg); return; }
 
@@ -365,6 +366,7 @@ void LSPHandler::handleInitialize(const json& request) {
             {"documentSymbolProvider", true},
             {"documentFormattingProvider", true},
             {"renameProvider", {{"prepareProvider", true}}},
+            {"codeActionProvider", {{"codeActionKinds", {"quickfix"}}}},
             {"semanticTokensProvider", {
                 {"legend", {
                     {"tokenTypes", {"variable", "function", "keyword", "type", "parameter", "struct", "string", "number", "operator", "namespace", "property", "enumMember", "method"}},
@@ -644,6 +646,18 @@ void LSPHandler::handleRename(const json& request) {
     auto cancelFlag = registerCancellable(id);
     enqueueWork([this, id, uri, pos, newName, cancelFlag]() {
         doRename(id, uri, pos, newName, cancelFlag);
+    });
+}
+
+void LSPHandler::handleCodeAction(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    json diagnostics = params.value("context", json::object()).value("diagnostics", json::array());
+
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, diagnostics, cancelFlag]() {
+        doCodeAction(id, uri, diagnostics, cancelFlag);
     });
 }
 
@@ -1414,6 +1428,130 @@ void LSPHandler::doRename(json id, std::string uri, LspPosition pos, std::string
     json changes = json::object();
     for (auto& [editUri, edits] : editsByUri) changes[editUri] = std::move(edits);
     sendResponse(id, {{"changes", changes}});
+}
+
+namespace {
+// Extracts the single backtick-quoted `import ...;` suggestion out of
+// UnqualifiedTypeNotVisibleError's (E032) own hint text -- e.g. "'X' is
+// declared in module 'Y'. Either use it qualified (`Y::X`), or bring it
+// into scope with `import Y::X;`." -- rather than re-deriving the
+// module/type names from the diagnostic's structured fields, which
+// MappedDiagnostic doesn't carry (only the rendered message/hint
+// strings survive to the LSP side). The hint's own wording is
+// deliberately treated as data here: there is exactly one backtick span
+// starting with "import " in this error's hint, by construction of the
+// error class itself, so this is a stable join, not the brittle
+// whole-message matching doc 03 warns about for codeless syntax errors.
+std::optional<std::string> extractImportSuggestion(const std::string& diagnosticMessage) {
+    static const std::string marker = "`import ";
+    size_t start = diagnosticMessage.find(marker);
+    if (start == std::string::npos) return std::nullopt;
+    start += 1; // skip the opening backtick, keep "import ..."
+    size_t end = diagnosticMessage.find('`', start);
+    if (end == std::string::npos) return std::nullopt;
+    return diagnosticMessage.substr(start, end - start);
+}
+
+// "Variable 'x' is declared but never used." (UnusedVariableWarning,
+// ErrorsFlow.h) -- a lint WARNING, which (unlike a typed TurfError)
+// never carries a stable E0NN code (TurfWarning::warn() doesn't pass one
+// to DiagnosticEngine::add() at all), so this is necessarily a message-
+// pattern match, the documented fallback for exactly this situation
+// (doc 03's "Coded vs. codeless diagnostics"). Returns the variable name
+// on a match.
+std::optional<std::string> extractUnusedVariableName(const std::string& diagnosticMessage) {
+    static const std::string prefix = "Variable '";
+    static const std::string suffix = "' is declared but never used.";
+    if (diagnosticMessage.rfind(prefix, 0) != 0) return std::nullopt;
+    size_t nameEnd = diagnosticMessage.find(suffix, prefix.size());
+    if (nameEnd == std::string::npos) return std::nullopt;
+    return diagnosticMessage.substr(prefix.size(), nameEnd - prefix.size());
+}
+} // namespace
+
+// doc 10 P4.3/P4.4 (code actions): two mechanical, message/code-driven
+// quick-fixes picked specifically because each is safe and cheap enough
+// to compute eagerly, with no `codeAction/resolve` round trip needed --
+// "enumerate all 68 E0NN codes and build a full table" (the doc's own
+// "Task 0") was explicitly NOT attempted; these two are a real, narrow
+// slice of that eventual table, not a stand-in for it.
+void LSPHandler::doCodeAction(json id, std::string uri, json diagnostics,
+                               std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!m_documents.contains(uri)) { sendError(id, -32801, "Content modified"); return; }
+
+    json actions = json::array();
+
+    for (const auto& diag : diagnostics) {
+        std::string message = diag.value("message", "");
+        std::string code = diag.value("code", "");
+
+        if (code == "E032") {
+            // extractImportSuggestion() already returns the complete
+            // statement text (e.g. "import list::List;", captured starting
+            // from the "import" keyword itself, not just the module::symbol
+            // part) -- do NOT re-prepend "import " here, that would double it.
+            if (auto importStmt = extractImportSuggestion(message)) {
+                json action = {
+                    {"title", "Add `" + *importStmt + "`"},
+                    {"kind", "quickfix"},
+                    {"diagnostics", json::array({diag})},
+                    {"edit", {{"changes", {{uri, json::array({
+                        {{"range", jsonRange({{0, 0}, {0, 0}})},
+                         {"newText", *importStmt + "\n"}}
+                    })}}}}}
+                };
+                actions.push_back(std::move(action));
+            }
+            continue;
+        }
+
+        if (auto varName = extractUnusedVariableName(message)) {
+            // Find the matching VarDecl declaration by line number (the
+            // diagnostic's own range points at the `mut`/`immut` KEYWORD,
+            // not the name -- VarDeclExprAST::getLoc() vs getNameLoc(),
+            // see ASTDecl.h -- so it can't be used directly as the insert
+            // position). Reuses findAllReferenceOccurrences() rather than
+            // re-scanning the source line by hand: a declaration
+            // occurrence on the SAME line as the diagnostic is, in
+            // practice, unambiguous (one `mut`/`immut` statement per
+            // physical line is the only style this compiler's own
+            // formatter -- and every real .tr file seen this session --
+            // produces).
+            auto analysis = ensureFreshAnalysis(uri, cancelled);
+            if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+            if (!analysis) continue;
+            auto rangeJson = diag.value("range", json::object());
+            int diagLine = rangeJson.value("start", json::object()).value("line", 0);
+            auto textSnap = m_documents.getText(uri);
+            if (!textSnap) continue;
+            PositionMapper mapper(textSnap->text, m_positionEncoding);
+            int compLine, compCol;
+            mapper.toCompilerLineCol({diagLine, 0}, compLine, compCol);
+
+            for (const auto& occ : SemanticQuery::findAllReferenceOccurrences(*analysis)) {
+                if (!occ.isDeclaration || occ.declModule.size()) continue; // locals only, never a module symbol
+                if (occ.loc.Line != compLine) continue;
+                json action = {
+                    {"title", "Prefix '" + *varName + "' with underscore (mark intentionally unused)"},
+                    {"kind", "quickfix"},
+                    {"diagnostics", json::array({diag})},
+                    {"edit", {{"changes", {{uri, json::array({
+                        {{"range", jsonRange(mapper.toLspRange(occ.loc.Line, occ.loc.Col, 0))},
+                         {"newText", "_"}}
+                    })}}}}}
+                };
+                actions.push_back(std::move(action));
+                break;
+            }
+        }
+    }
+
+    sendResponse(id, actions);
 }
 
 // doc 08 P3.6 (bonus): a flat outline of the current file's top-level
