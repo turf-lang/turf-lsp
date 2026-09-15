@@ -115,7 +115,13 @@ Keep it tight — one code block + a couple of lines.
   same-file and cross-file. Compiler-captured `getDocComment()` (option
   1) not attempted -- still the documented "later correctness/reuse
   upgrade", not required for this to work today.
-- ⬜ **P2.4** Not done — overload listing at bare function names.
+- ✅ **P2.4** Done (2026-09-16): hovering a bare function NAME with
+  multiple overloads lists every signature (via
+  `lookupCurrentFileFunctions()`, same lookup completion's
+  `firstOverload()` already uses); hovering a CALL still shows only the
+  selected overload, unchanged. Only current-file overloads are
+  reachable this way -- an imported module's own decl is never
+  hit-tested by `findNodeAt()`.
 
 ## Acceptance tests
 - Hover a local shows `immut count: int` (or `mut`), underlining `count`.
