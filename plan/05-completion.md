@@ -143,8 +143,17 @@ overload's `signature()` with the active parameter highlighted. Reuses
 
 ## Phased tasks
 - **P2.1** Reuse cached analysis; patch-parse only when necessary (G1).
-- **P2.2** Import/`from`/`mod::` completion context (G2) + `listAvailableModules`
-  compiler helper.
+- ✅/⬜ **P2.2** Partially done (2026-09-15): `import <prefix>` module-name
+  completion shipped, backed by turf-lang's new `ListAvailableModules()`
+  (unions `lib/std/**` + `lib/usr/**` + sibling `.tr` files, sharing
+  `IndexModuleDir()`/`TurfInstallRoot()` with `ResolveModuleFile()` so it
+  can't disagree with a real import). Confirmed turf-lang has no `from X
+  import Y` form to also support (only `extern from "lib" fn ...` uses
+  `from`). Not done: `import mod::<prefix>` (mod's exported symbols) --
+  needs loading the target module's own symbol table before it's actually
+  imported into this file, a meaningfully bigger feature than the
+  filesystem listing above; genuinely deferred, not skipped for
+  convenience.
 - **P2.3** `completionItem/resolve` + `data` payload + lazy docs (G4).
 - **P2.4** Scope-distance ranking + de-dup + `sortText` (G3, G6).
 - **P2.5** Prefix pre-filter via `SuggestionIndex` trie; `isIncomplete` for big
@@ -153,9 +162,11 @@ overload's `signature()` with the active parameter highlighted. Reuses
 - **P3.7** Signature help (stretch).
 
 ## Acceptance tests
-- Typing `import ` lists real module names incl. those in subfolders (`net`,
-  `list`, `io`, ...); accepting inserts `import net;`.
-- `import io::` lists `io`'s exported functions.
+- ✅ Typing `import ` lists real module names incl. those in subfolders
+  (`net`, `list`, `io`, ...); accepting inserts `import net;` -- verified
+  live (2026-09-15): `import ne` returns all 27 resolvable names
+  (23 stdlib + sibling files), each with insertText `"<name>;"`.
+- ⬜ `import io::` lists `io`'s exported functions -- not done, see P2.2.
 - `p.` on a `Point` instance lists its fields then instance methods (not
   statics); `Point::` lists `new`, `default`, static methods (not instance).
 - A free function suggestion inserts a call snippet with tab-stops over its
