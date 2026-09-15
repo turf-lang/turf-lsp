@@ -161,9 +161,9 @@ json jsonRange(const LspRange& r) {
 // same "what's the source span of the thing under the cursor" question
 // hover already answers for every node kind this handles, so recomputing
 // it here via a second dynamic_cast chain would be pure duplication.
-json buildDefinitionResult(const std::string& targetUri, const LspRange& targetRange,
-                            bool linkSupport, const ExprAST* node, int compLine, int compCol,
-                            const PositionMapper& mapper) {
+json buildDefinitionResult(const DocumentAnalysis& analysis, const std::string& targetUri,
+                            const LspRange& targetRange, bool linkSupport, const ExprAST* node,
+                            int compLine, int compCol, const PositionMapper& mapper) {
     if (!linkSupport) {
         return {
             {"uri", targetUri},
@@ -175,7 +175,7 @@ json buildDefinitionResult(const std::string& targetUri, const LspRange& targetR
         {"targetRange", jsonRange(targetRange)},
         {"targetSelectionRange", jsonRange(targetRange)}
     };
-    if (auto originInfo = SemanticQuery::hover(node, compLine, compCol)) {
+    if (auto originInfo = SemanticQuery::hover(analysis, node, compLine, compCol)) {
         if (originInfo->length > 0) {
             link["originSelectionRange"] = jsonRange(mapper.toLspRange(originInfo->loc.Line, originInfo->loc.Col, originInfo->length));
         }
@@ -781,7 +781,7 @@ void LSPHandler::doHover(json id, std::string uri, LspPosition pos, std::shared_
     json result = nullptr;
     const ExprAST* node = SemanticQuery::findNodeAt(*analysis, compLine, compCol);
     if (node) {
-        auto info = SemanticQuery::hover(node, compLine, compCol);
+        auto info = SemanticQuery::hover(*analysis, node, compLine, compCol);
         if (info) {
             // Doc-comment (doc 06 P2.3, interim LSP-side source rescan):
             // reuses getDeclarationLoc() -- same query doDefinition() uses
@@ -889,7 +889,7 @@ void LSPHandler::doDefinition(json id, std::string uri, LspPosition pos, std::sh
                     range.start = {declLocOpt->loc.Line - 1, declLocOpt->loc.Col - 1};
                     range.end = {declLocOpt->loc.Line - 1, declLocOpt->loc.Col - 1 + len};
                 }
-                result = buildDefinitionResult(targetUri, range, m_linkSupport, node, compLine, compCol, mapper);
+                result = buildDefinitionResult(*analysis, targetUri, range, m_linkSupport, node, compLine, compCol, mapper);
             }
         }
     }
@@ -951,7 +951,7 @@ void LSPHandler::doTypeDefinition(json id, std::string uri, LspPosition pos, std
                     range.start = {typeLocOpt->loc.Line - 1, typeLocOpt->loc.Col - 1};
                     range.end = {typeLocOpt->loc.Line - 1, typeLocOpt->loc.Col - 1 + len};
                 }
-                result = buildDefinitionResult(targetUri, range, m_linkSupport, node, compLine, compCol, mapper);
+                result = buildDefinitionResult(*analysis, targetUri, range, m_linkSupport, node, compLine, compCol, mapper);
             }
         }
     }

@@ -285,7 +285,8 @@ TurfTypePtr exprType(const ExprAST* e) {
 }
 } // namespace
 
-std::optional<HoverInfo> SemanticQuery::hover(const ExprAST* node, int cursorLine, int cursorCol) {
+std::optional<HoverInfo> SemanticQuery::hover(const DocumentAnalysis& analysis, const ExprAST* node,
+                                              int cursorLine, int cursorCol) {
     if (!node) return std::nullopt;
 
     if (auto varNode = dynamic_cast<const VariableExprAST*>(node)) {
@@ -326,8 +327,30 @@ std::optional<HoverInfo> SemanticQuery::hover(const ExprAST* node, int cursorLin
         }
     } else if (auto fnDef = dynamic_cast<const FuncDefExprAST*>(node)) {
         if (auto target = fnDef->getResolvedDef()) {
-            return HoverInfo{"```turf\nfn " + target->signature() + "\n```",
-                             fnDef->getNameLoc(), bareNameLength(fnDef->getName())};
+            // Overload listing (doc 06 edge case): getResolvedDef() only
+            // carries THIS declaration's own overload, but a bare function
+            // NAME (as opposed to a specific call, which already resolved
+            // to exactly one via getResolvedCallTarget() above) is
+            // ambiguous about which one the user means -- list every
+            // overload sharing this flat name in the current file (an
+            // imported module's own FuncDefExprAST is never hit-tested by
+            // findNodeAt() -- ModuleImportExprAST bodies aren't recursed
+            // into for position lookups -- so "current file" is the only
+            // case this can ever see).
+            std::string text;
+            std::vector<const ResolverFunctionSymbol*> overloads;
+            if (analysis.resolver) overloads = analysis.resolver->symbolTable().lookupCurrentFileFunctions(fnDef->getName());
+            if (overloads.size() > 1) {
+                text = "```turf\n";
+                for (size_t i = 0; i < overloads.size(); ++i) {
+                    if (i) text += "\n";
+                    text += "fn " + overloads[i]->signature();
+                }
+                text += "\n```";
+            } else {
+                text = "```turf\nfn " + target->signature() + "\n```";
+            }
+            return HoverInfo{text, fnDef->getNameLoc(), bareNameLength(fnDef->getName())};
         }
     } else if (auto methodNode = dynamic_cast<const MethodCallExprAST*>(node)) {
         if (auto target = methodNode->getResolvedCallTarget()) {

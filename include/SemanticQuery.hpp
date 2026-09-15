@@ -99,8 +99,11 @@ public:
     // referenced by `node`. `cursorLine`/`cursorCol` (1-indexed, same as
     // findNodeAt) are needed only to disambiguate a ScopeAccessExprAST's two
     // names (`Left::Right`) sharing one node -- every other node kind
-    // ignores them.
-    static std::optional<HoverInfo> hover(const ExprAST* node, int cursorLine, int cursorCol);
+    // ignores them. `analysis` is needed only for a FuncDefExprAST with
+    // multiple overloads (doc 06's overload-listing edge case) -- every
+    // other node kind ignores it too.
+    static std::optional<HoverInfo> hover(const DocumentAnalysis& analysis, const ExprAST* node,
+                                          int cursorLine, int cursorCol);
 
     // Extracts semantic tokens from the given document analysis. Name-bearing
     // nodes (struct/fn/extern/var decls, field/method access, module imports)
