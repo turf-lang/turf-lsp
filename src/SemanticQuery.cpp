@@ -149,6 +149,20 @@ public:
             if (contains(scopeCallee->getRightLoc(), static_cast<int>(scopeCallee->getRightName().length()))) {
                 BestNode = &Node;
             }
+        } else if (auto varCallee = dynamic_cast<const VariableExprAST*>(Node.getCallee())) {
+            // A bare `add(...)` callee is a VariableExprAST whose own
+            // ResolvedSymbol is null -- it names a FUNCTION, not a real
+            // variable binding, so visitVariable's ordinary checkNode()
+            // above already made it BestNode purely by position, but
+            // hoverText()/getDeclarationLoc() can't read a call target off
+            // a null-symbol variable. Retarget to the FuncCallExprAST
+            // itself (which DOES carry getResolvedCallTarget()) so a plain
+            // free-function call hovers/jumps exactly like a module- or
+            // struct-qualified one already does above.
+            if (!varCallee->getResolvedSymbol() &&
+                contains(varCallee->getLoc(), static_cast<int>(varCallee->getName().length()))) {
+                BestNode = &Node;
+            }
         }
         for (const auto& arg : Node.getArgs()) {
             if (arg) const_cast<ExprAST*>(arg.get())->accept(*this);
