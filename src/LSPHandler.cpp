@@ -2,33 +2,18 @@
 #include "SemanticQuery.hpp"
 #include <iostream>
 #include <string>
-#include <sstream>
 #include <cctype>
 #include <llvm/Support/Path.h>
 #include <llvm/ADT/SmallString.h>
 
 extern std::string CompilerExecutablePath;
 
-// Shared by hover/definition/semanticTokens: they all need the document's
-// raw text as 0-indexed lines for SemanticQuery's name-location recovery
-// (see findNameLoc()'s doc comment in SemanticQuery.cpp).
-static std::vector<std::string> splitIntoLines(const std::string& text) {
-    std::vector<std::string> lines;
-    std::istringstream iss(text);
-    std::string lineStr;
-    while (std::getline(iss, lineStr)) {
-        if (!lineStr.empty() && lineStr.back() == '\r') lineStr.pop_back();
-        lines.push_back(lineStr);
-    }
-    return lines;
-}
-
 LSPHandler::LSPHandler() : m_shutdownRequested(false) {}
 
 void LSPHandler::handleMessage(const std::string& message) {
     try {
         json msg = json::parse(message);
-        
+
         // Ensure it's a valid JSON-RPC message
         if (!msg.contains("jsonrpc") || msg["jsonrpc"] != "2.0") {
             std::cerr << "Invalid JSON-RPC message received.\n";
@@ -327,8 +312,7 @@ void LSPHandler::handleHover(const json& request) {
     json result = nullptr;
     auto it = m_documents.find(uri);
     if (it != m_documents.end() && it->second.analysis) {
-        std::vector<std::string> sourceLines = splitIntoLines(it->second.text);
-        const ExprAST* node = SemanticQuery::findNodeAt(*(it->second.analysis), line, col, sourceLines);
+        const ExprAST* node = SemanticQuery::findNodeAt(*(it->second.analysis), line, col);
         if (node) {
             auto text = SemanticQuery::hoverText(node);
             if (text) {
@@ -362,13 +346,12 @@ void LSPHandler::handleDefinition(const json& request) {
     json result = nullptr;
     auto it = m_documents.find(uri);
     if (it != m_documents.end() && it->second.analysis) {
-        std::vector<std::string> sourceLines = splitIntoLines(it->second.text);
-        const ExprAST* node = SemanticQuery::findNodeAt(*(it->second.analysis), line, col, sourceLines);
+        const ExprAST* node = SemanticQuery::findNodeAt(*(it->second.analysis), line, col);
         if (node) {
             auto declLocOpt = SemanticQuery::getDeclarationLoc(node);
             if (declLocOpt && declLocOpt->loc.Line > 0) { // Valid location
                 std::string targetUri = uri;
-                
+
                 // If it's a standard library module, resolve cross-file!
                 if (!declLocOpt->moduleName.empty()) {
                     llvm::SmallString<128> StdlibPath(CompilerExecutablePath);
@@ -405,8 +388,7 @@ void LSPHandler::handleSemanticTokens(const json& request) {
     json result = nullptr;
     auto it = m_documents.find(uri);
     if (it != m_documents.end() && it->second.analysis) {
-        std::vector<std::string> sourceLines = splitIntoLines(it->second.text);
-        auto tokens = SemanticQuery::getSemanticTokens(*(it->second.analysis), sourceLines);
+        auto tokens = SemanticQuery::getSemanticTokens(*(it->second.analysis));
 
         std::vector<int> data;
         int prevLine = 1;
@@ -415,13 +397,13 @@ void LSPHandler::handleSemanticTokens(const json& request) {
         for (const auto& token : tokens) {
             int deltaLine = token.line - prevLine;
             int deltaStartChar = (deltaLine == 0) ? (token.col - prevCol) : (token.col - 1);
-            
+
             data.push_back(deltaLine);
             data.push_back(deltaStartChar);
             data.push_back(token.length);
             data.push_back(static_cast<int>(token.type));
             data.push_back(token.modifiers);
-            
+
             prevLine = token.line;
             prevCol = token.col;
         }

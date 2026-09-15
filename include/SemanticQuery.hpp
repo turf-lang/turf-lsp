@@ -58,13 +58,12 @@ struct SymbolLocation {
 
 class SemanticQuery {
 public:
-    // Finds the innermost AST node that intersects with the given Line and Col
-    // Both Line and Col are 1-indexed. `sourceLines` (0-indexed) is needed for
-    // the same reason SemanticTokensVisitor needs it: several node types only
-    // store a preceding keyword/operator's location, not the name token's own
-    // -- see findNameLoc()'s doc comment in SemanticQuery.cpp.
-    static const ExprAST* findNodeAt(const DocumentAnalysis& analysis, int line, int col,
-                                     const std::vector<std::string>& sourceLines);
+    // Finds the innermost AST node that intersects with the given Line and Col.
+    // Both Line and Col are 1-indexed. Hit-tests name-bearing nodes (struct/fn/
+    // extern/var decls, field/method access) against their own getNameLoc()
+    // (issue #230) rather than a preceding keyword/operator's location, so no
+    // source-text recovery is needed here.
+    static const ExprAST* findNodeAt(const DocumentAnalysis& analysis, int line, int col);
 
     // Returns the location of the declaration for the symbol referenced by the node,
     // along with the module name if it's imported.
@@ -73,13 +72,11 @@ public:
     // Formats a hover tooltip for the symbol referenced by the node.
     static std::optional<std::string> hoverText(const ExprAST* node);
 
-    // Extracts semantic tokens from the given document analysis. `sourceLines`
-    // (0-indexed) is needed because ModuleImportExprAST only stores the
-    // `import` KEYWORD's own location, not the module name token's -- the
-    // module name's real column is recovered by scanning the actual source
-    // line rather than guessing an offset from the keyword's position.
-    static std::vector<SemanticToken> getSemanticTokens(const DocumentAnalysis& analysis,
-                                                         const std::vector<std::string>& sourceLines);
+    // Extracts semantic tokens from the given document analysis. Name-bearing
+    // nodes (struct/fn/extern/var decls, field/method access, module imports)
+    // are colored at their own getNameLoc() (issue #230), not a preceding
+    // keyword/operator's location.
+    static std::vector<SemanticToken> getSemanticTokens(const DocumentAnalysis& analysis);
 
     // Builds context-aware completion items for a cursor sitting right after
     // `lineTextBeforeCursor` (the current line's text up to, not including,

@@ -6,52 +6,25 @@
 #include <unordered_map>
 #include <utility>
 
-// Shared by findNameLoc() below and the completion-context scanning further
-// down this file.
+// Shared with the completion-context scanning further down this file.
 static bool isIdentChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
 
-// A whole class of AST nodes (ModuleImportExprAST, StructDeclExprAST,
-// FuncDefExprAST, ExternFuncDeclExprAST, VarDeclExprAST, FieldAccessExprAST,
-// MethodCallExprAST) only store ONE location each: the DECLARING KEYWORD's
-// (or, for field/method access, the '.' operator's) own position, captured
-// in the parser before that token is even consumed -- there's no separate
-// field anywhere for the NAME token that follows it. Reusing that position
-// as the start of a span sized to the name's length points at the wrong
-// text entirely (e.g. `struct E` would highlight/hit-test the 1-character
-// span right after 's' -- the first letter of "struct" -- instead of "E").
-// Used by both SemanticTokensVisitor (coloring) and NodeFinderVisitor
-// (hover/go-to-definition hit-testing), which is why it's a shared free
-// function rather than a member of either.
-//
-// Recovers the name's real column by searching the actual source line for
-// it, starting AT (not skipping past) the keyword/operator's own column --
-// since `name` can never equal a reserved keyword, the first match at or
-// after that column is necessarily the real name token, regardless of what
-// (or how long) precedes it. Boundary-checked so a short name doesn't match
-// as a substring of something longer (e.g. a struct named "E" wrongly
-// matching inside a field type "Entity" later on the same line). Returns
-// nullopt if the line/text isn't available or the name genuinely isn't
-// found -- better to skip/miss than to act on the wrong text.
-static std::optional<SourceLocation> findNameLoc(const std::vector<std::string>* sourceLines,
-                                                  const SourceLocation& anchorLoc,
-                                                  const std::string& name) {
-    if (!sourceLines || name.empty()) return std::nullopt;
-    if (anchorLoc.Line <= 0 || static_cast<size_t>(anchorLoc.Line) > sourceLines->size())
-        return std::nullopt;
-    const std::string& lineText = (*sourceLines)[anchorLoc.Line - 1];
-    size_t searchFrom = static_cast<size_t>(anchorLoc.Col > 0 ? anchorLoc.Col - 1 : 0);
-    size_t pos = searchFrom;
-    while (true) {
-        pos = lineText.find(name, pos);
-        if (pos == std::string::npos) return std::nullopt;
-        bool boundaryBefore = (pos == 0) || !isIdentChar(lineText[pos - 1]);
-        size_t afterPos = pos + name.size();
-        bool boundaryAfter = (afterPos >= lineText.size()) || !isIdentChar(lineText[afterPos]);
-        if (boundaryBefore && boundaryAfter) {
-            return SourceLocation{anchorLoc.Line, static_cast<int>(pos + 1), anchorLoc.Filename};
-        }
-        pos += 1;
-    }
+// FuncDefExprAST::getName() returns the qualified "Struct.method" for a
+// struct method declaration (the flat name the resolver registers it
+// under), but getNameLoc() deliberately points at just the bare method
+// identifier's own token -- see its doc comment in ASTDecl.h ("Repoint
+// NameLoc at the METHOD name specifically", issue #230). Pairing
+// getNameLoc() with getName().length() as a span therefore overshoots the
+// real identifier into whatever follows it in source (e.g. "new(x: do" for
+// "fn Point.new(x: double...)" -- 9 characters from "Point.new", starting
+// at "new"'s real column). This recovers just the bare name's length: the
+// substring after the last '.', or the whole name when there isn't one (an
+// ordinary free function, where getName() is already bare).
+static int bareNameLength(const std::string &qualifiedName) {
+    auto dot = qualifiedName.find_last_of('.');
+    return static_cast<int>(dot == std::string::npos
+                                 ? qualifiedName.length()
+                                 : qualifiedName.length() - dot - 1);
 }
 
 // A visitor that traverses the AST to find the tightest node enclosing a location.
@@ -59,7 +32,6 @@ class NodeFinderVisitor : public ASTVisitor {
     int TargetLine;
     int TargetCol;
     const ExprAST* BestNode = nullptr;
-    const std::vector<std::string>* SourceLines = nullptr;
 
     bool contains(const SourceLocation& Loc, int Length) const {
         if (Loc.Line != TargetLine) return false;
@@ -72,21 +44,8 @@ class NodeFinderVisitor : public ASTVisitor {
         }
     }
 
-    // For the same node types findNameLoc() documents (struct/fn/extern/var
-    // decls, field/method access): checkNode() against the raw getLoc() +
-    // name.length() would test containment against the wrong span (the
-    // keyword's or '.'s position, not the name's) -- clicking/hovering
-    // directly on the real name would silently miss. Recovers the name's
-    // real location first, same as SemanticTokensVisitor does for coloring.
-    void checkNamedNode(const ExprAST* Node, const SourceLocation& anchorLoc, const std::string& name) {
-        if (auto nameLoc = findNameLoc(SourceLines, anchorLoc, name)) {
-            checkNode(Node, *nameLoc, static_cast<int>(name.length()));
-        }
-    }
-
 public:
-    NodeFinderVisitor(int line, int col, const std::vector<std::string>* sourceLines)
-        : TargetLine(line), TargetCol(col), SourceLines(sourceLines) {}
+    NodeFinderVisitor(int line, int col) : TargetLine(line), TargetCol(col) {}
 
     const ExprAST* getBestNode() const { return BestNode; }
 
@@ -101,7 +60,7 @@ public:
     }
     
     void visitVarDecl(VarDeclExprAST &Node) override {
-        checkNamedNode(&Node, Node.getLoc(), Node.getName());
+        checkNode(&Node, Node.getNameLoc(), static_cast<int>(Node.getName().length()));
         if (Node.getInitializer()) {
             const_cast<ExprAST*>(Node.getInitializer())->accept(*this);
         }
@@ -172,7 +131,7 @@ public:
     }
 
     void visitFuncDef(FuncDefExprAST &Node) override {
-        checkNamedNode(&Node, Node.getLoc(), Node.getName());
+        checkNode(&Node, Node.getNameLoc(), bareNameLength(Node.getName()));
         if (Node.getBodyMut()) const_cast<ExprAST*>(Node.getBodyMut())->accept(*this);
     }
 
@@ -197,7 +156,7 @@ public:
 
     void visitMethodCall(MethodCallExprAST &Node) override {
         if (Node.getBase()) const_cast<ExprAST*>(Node.getBase())->accept(*this);
-        checkNamedNode(&Node, Node.getLoc(), Node.getMethod());
+        checkNode(&Node, Node.getNameLoc(), static_cast<int>(Node.getMethod().length()));
         for (const auto& arg : Node.getArgs()) {
             if (arg) const_cast<ExprAST*>(arg.get())->accept(*this);
         }
@@ -205,7 +164,7 @@ public:
 
     void visitFieldAccess(FieldAccessExprAST &Node) override {
         if (Node.getBase()) const_cast<ExprAST*>(Node.getBase())->accept(*this);
-        checkNamedNode(&Node, Node.getLoc(), Node.getFieldName());
+        checkNode(&Node, Node.getNameLoc(), static_cast<int>(Node.getFieldName().length()));
     }
 
     void visitScopeAccess(ScopeAccessExprAST &Node) override {
@@ -214,7 +173,7 @@ public:
     }
 
     void visitStructDecl(StructDeclExprAST &Node) override {
-        checkNamedNode(&Node, Node.getLoc(), Node.getName());
+        checkNode(&Node, Node.getNameLoc(), static_cast<int>(Node.getName().length()));
     }
 
     void visitArrayAccess(ArrayAccessExprAST &Node) override {
@@ -226,9 +185,8 @@ public:
     // but we can add more if needed
 };
 
-const ExprAST* SemanticQuery::findNodeAt(const DocumentAnalysis& analysis, int line, int col,
-                                         const std::vector<std::string>& sourceLines) {
-    NodeFinderVisitor visitor(line, col, &sourceLines);
+const ExprAST* SemanticQuery::findNodeAt(const DocumentAnalysis& analysis, int line, int col) {
+    NodeFinderVisitor visitor(line, col);
     for (const auto& ast : analysis.asts) {
         if (ast) {
             const_cast<ExprAST*>(ast.get())->accept(visitor);
@@ -311,7 +269,6 @@ std::optional<std::string> SemanticQuery::hoverText(const ExprAST* node) {
 class SemanticTokensVisitor : public ASTVisitor {
 public:
     std::vector<SemanticToken> tokens;
-    const std::vector<std::string>* SourceLines = nullptr;
 
     void addToken(const SourceLocation& loc, int length, SemanticTokenType type, int modifiers = 0) {
         if (loc.Line > 0 && length > 0) {
@@ -332,11 +289,7 @@ public:
         if (Node.isImmutable()) {
             modifiers |= static_cast<int>(SemanticTokenModifier::Readonly);
         }
-        // getLoc() is `mut`/`immut`/`mutable`/`immutable`'s own position, not
-        // the variable name's -- see findNameLoc()'s doc comment.
-        if (auto nameLoc = findNameLoc(SourceLines, Node.getLoc(), Node.getName())) {
-            addToken(*nameLoc, Node.getName().length(), SemanticTokenType::Variable, modifiers);
-        }
+        addToken(Node.getNameLoc(), Node.getName().length(), SemanticTokenType::Variable, modifiers);
         if (Node.getInitializer()) {
             const_cast<ExprAST*>(Node.getInitializer())->accept(*this);
         }
@@ -344,10 +297,7 @@ public:
 
     void visitFuncDef(FuncDefExprAST &Node) override {
         int modifiers = static_cast<int>(SemanticTokenModifier::Declaration);
-        // getLoc() is `fn`'s own position, not the function name's.
-        if (auto nameLoc = findNameLoc(SourceLines, Node.getLoc(), Node.getName())) {
-            addToken(*nameLoc, Node.getName().length(), SemanticTokenType::Function, modifiers);
-        }
+        addToken(Node.getNameLoc(), bareNameLength(Node.getName()), SemanticTokenType::Function, modifiers);
         if (Node.getBodyMut()) const_cast<ExprAST*>(Node.getBodyMut())->accept(*this);
     }
     
@@ -438,11 +388,8 @@ public:
     // ExprAST nodes (StructField is a plain name+TurfTypePtr pair), so
     // there's nothing further to recurse into here.
     void visitStructDecl(StructDeclExprAST &Node) override {
-        // getLoc() is `struct`'s own position, not the struct name's.
-        if (auto nameLoc = findNameLoc(SourceLines, Node.getLoc(), Node.getName())) {
-            addToken(*nameLoc, Node.getName().length(), SemanticTokenType::Struct,
-                     static_cast<int>(SemanticTokenModifier::Declaration));
-        }
+        addToken(Node.getNameLoc(), Node.getName().length(), SemanticTokenType::Struct,
+                 static_cast<int>(SemanticTokenModifier::Declaration));
     }
 
     // Base.field -- Base gets whatever token its own shape implies (variable,
@@ -455,22 +402,14 @@ public:
     // identifier's real position.
     void visitFieldAccess(FieldAccessExprAST &Node) override {
         if (Node.getBase()) const_cast<ExprAST*>(Node.getBase())->accept(*this);
-        // getLoc() is the '.' token's own position (ParsePostfixExpression
-        // captures it there and never threads the field-name token's own
-        // location through to the AST node at all), not the field name's.
-        if (auto nameLoc = findNameLoc(SourceLines, Node.getLoc(), Node.getFieldName())) {
-            addToken(*nameLoc, Node.getFieldName().length(), SemanticTokenType::Property);
-        }
+        addToken(Node.getNameLoc(), Node.getFieldName().length(), SemanticTokenType::Property);
     }
 
     // Base.method(args) -- Method is highlighted distinctly from a Property
     // access and from a free Function call.
     void visitMethodCall(MethodCallExprAST &Node) override {
         if (Node.getBase()) const_cast<ExprAST*>(Node.getBase())->accept(*this);
-        // getLoc() is the '.' token's own position, same as FieldAccessExprAST.
-        if (auto nameLoc = findNameLoc(SourceLines, Node.getLoc(), Node.getMethod())) {
-            addToken(*nameLoc, Node.getMethod().length(), SemanticTokenType::Method);
-        }
+        addToken(Node.getNameLoc(), Node.getMethod().length(), SemanticTokenType::Method);
         for (const auto& arg : Node.getArgs()) {
             if (arg) const_cast<ExprAST*>(arg.get())->accept(*this);
         }
@@ -493,18 +432,13 @@ public:
     // recursive visit here would corrupt this document's token stream with
     // positions that belong to someone else's file).
     void visitModuleImport(ModuleImportExprAST &Node) override {
-        if (auto nameLoc = findNameLoc(SourceLines, Node.getLoc(), Node.getModuleName())) {
-            addToken(*nameLoc, Node.getModuleName().length(), SemanticTokenType::Namespace,
-                     static_cast<int>(SemanticTokenModifier::Declaration));
-        }
+        addToken(Node.getNameLoc(), Node.getModuleName().length(), SemanticTokenType::Namespace,
+                 static_cast<int>(SemanticTokenModifier::Declaration));
     }
 
     void visitExternFuncDecl(ExternFuncDeclExprAST &Node) override {
-        // getLoc() is `extern`'s own position, not the function name's.
-        if (auto nameLoc = findNameLoc(SourceLines, Node.getLoc(), Node.getName())) {
-            addToken(*nameLoc, Node.getName().length(), SemanticTokenType::Function,
-                     static_cast<int>(SemanticTokenModifier::Declaration));
-        }
+        addToken(Node.getNameLoc(), Node.getName().length(), SemanticTokenType::Function,
+                 static_cast<int>(SemanticTokenModifier::Declaration));
     }
 
     void visitArrayDecl(ArrayDeclExprAST &Node) override {
@@ -530,10 +464,8 @@ public:
 
 #include <algorithm>
 
-std::vector<SemanticToken> SemanticQuery::getSemanticTokens(const DocumentAnalysis& analysis,
-                                                             const std::vector<std::string>& sourceLines) {
+std::vector<SemanticToken> SemanticQuery::getSemanticTokens(const DocumentAnalysis& analysis) {
     SemanticTokensVisitor visitor;
-    visitor.SourceLines = &sourceLines;
     for (const auto& ast : analysis.asts) {
         if (ast) {
             const_cast<ExprAST*>(ast.get())->accept(visitor);
