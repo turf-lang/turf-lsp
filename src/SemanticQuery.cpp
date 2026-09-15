@@ -214,23 +214,28 @@ std::optional<SymbolLocation> SemanticQuery::getDeclarationLoc(const ExprAST* no
 
     if (auto varNode = dynamic_cast<const VariableExprAST*>(node)) {
         if (auto sym = varNode->getResolvedSymbol()) {
-            return SymbolLocation{sym->DeclLoc, ""};
+            return SymbolLocation{sym->DeclLoc, "", static_cast<int>(sym->Name.length())};
         }
     } else if (auto varDecl = dynamic_cast<const VarDeclExprAST*>(node)) {
         if (auto sym = varDecl->getResolvedSymbol()) {
-            return SymbolLocation{sym->DeclLoc, ""};
+            return SymbolLocation{sym->DeclLoc, "", static_cast<int>(sym->Name.length())};
         }
     } else if (auto callNode = dynamic_cast<const FuncCallExprAST*>(node)) {
         if (auto target = callNode->getResolvedCallTarget()) {
-            return SymbolLocation{target->DeclLoc, target->SourceModule};
+            // bareNameLength(), not a raw .length(): a struct method's
+            // BaseName/getName() can be the qualified "Struct.method" (same
+            // reasoning as bareNameLength()'s own doc comment above), but
+            // only the bare "method" identifier appears at the DECLARATION
+            // site this length is measuring.
+            return SymbolLocation{target->DeclLoc, target->SourceModule, bareNameLength(target->BaseName)};
         }
     } else if (auto fnDef = dynamic_cast<const FuncDefExprAST*>(node)) {
         if (auto target = fnDef->getResolvedDef()) {
-            return SymbolLocation{target->DeclLoc, target->SourceModule};
+            return SymbolLocation{target->DeclLoc, target->SourceModule, bareNameLength(target->BaseName)};
         }
     } else if (auto methodNode = dynamic_cast<const MethodCallExprAST*>(node)) {
         if (auto target = methodNode->getResolvedCallTarget()) {
-            return SymbolLocation{target->DeclLoc, target->SourceModule};
+            return SymbolLocation{target->DeclLoc, target->SourceModule, bareNameLength(target->BaseName)};
         }
     }
     return std::nullopt;
@@ -384,18 +389,25 @@ namespace {
 // modules is itself a compile error the Resolver already reports).
 class TypeDeclIndexVisitor : public ASTVisitor {
 public:
-    struct Entry { SourceLocation loc; std::string moduleName; };
+    // `length` is the span to highlight at `loc` -- the real name length
+    // for a struct (loc IS the name), but deliberately just 1 (a caret) for
+    // an enum: loc there is the `enum` KEYWORD (see visitEnumDecl's doc
+    // comment), so highlighting typeName.length() characters from that
+    // position would bleed into "enum " + part of the name instead of
+    // landing on the name itself.
+    struct Entry { SourceLocation loc; std::string moduleName; int length; };
     std::unordered_map<std::string, Entry> types;
 
     void visitStructDecl(StructDeclExprAST &Node) override {
-        types.emplace(Node.getName(), Entry{Node.getNameLoc(), currentModule});
+        types.emplace(Node.getName(),
+                      Entry{Node.getNameLoc(), currentModule, static_cast<int>(Node.getName().length())});
     }
     // EnumDeclExprAST has no separate NameLoc (unlike StructDeclExprAST --
     // it predates issue #230's name-location fix), so this lands on the
     // `enum` keyword rather than the name itself -- still a correct jump
     // target, just a less precise one than the struct case.
     void visitEnumDecl(EnumDeclExprAST &Node) override {
-        types.emplace(Node.getName(), Entry{Node.getLoc(), currentModule});
+        types.emplace(Node.getName(), Entry{Node.getLoc(), currentModule, 1});
     }
     void visitModuleImport(ModuleImportExprAST &Node) override {
         if (!Node.getBody()) return;
@@ -453,7 +465,7 @@ std::optional<SymbolLocation> SemanticQuery::getTypeDefinitionLoc(const Document
     auto it = indexer.types.find(typeName);
     if (it == indexer.types.end()) return std::nullopt;
     ResolverSourceLocation loc{it->second.loc.Line, it->second.loc.Col};
-    return SymbolLocation{loc, it->second.moduleName};
+    return SymbolLocation{loc, it->second.moduleName, it->second.length};
 }
 
 class SemanticTokensVisitor : public ASTVisitor {

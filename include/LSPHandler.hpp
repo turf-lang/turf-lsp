@@ -124,6 +124,13 @@ private:
     bool m_initialized = false;
     bool m_shutdownRequested = false;
     PositionEncodingKind m_positionEncoding = PositionEncodingKind::UTF16;
+    // From capabilities.textDocument.definition.linkSupport (doc 07 P2.2) --
+    // used for declaration/typeDefinition too, on the pragmatic assumption
+    // (true of every real client: VS Code, Neovim's vim.lsp, ...) that a
+    // client declaring LocationLink support for one of the three declares
+    // it for all three, rather than storing three separate flags for a
+    // distinction no real client actually makes.
+    bool m_linkSupport = false;
 
     // Worker thread + single-consumer queue.
     std::thread m_workerThread;

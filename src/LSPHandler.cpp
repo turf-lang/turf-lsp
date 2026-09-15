@@ -95,6 +95,41 @@ json jsonRange(const LspRange& r) {
     };
 }
 
+// Builds the response for definition/declaration/typeDefinition (doc 07
+// P2.2/P2.5): a plain `Location` for clients that never declared
+// `linkSupport` (unchanged wire shape from before this), or a one-element
+// `LocationLink[]` when they did. `targetRange` is used for both
+// `targetRange` and `targetSelectionRange` -- the whole-declaration range
+// isn't cheaply known separately from the name's own span (see this doc's
+// own note: "targetRange = the whole decl if cheaply known (else same as
+// selection)"), so this is the "else" branch, not a shortcut taken instead
+// of the real thing. `originSelectionRange` reuses SemanticQuery::hover()'s
+// per-node-kind span computation purely for its .loc/.length -- the exact
+// same "what's the source span of the thing under the cursor" question
+// hover already answers for every node kind this handles, so recomputing
+// it here via a second dynamic_cast chain would be pure duplication.
+json buildDefinitionResult(const std::string& targetUri, const LspRange& targetRange,
+                            bool linkSupport, const ExprAST* node, int compLine, int compCol,
+                            const PositionMapper& mapper) {
+    if (!linkSupport) {
+        return {
+            {"uri", targetUri},
+            {"range", jsonRange(targetRange)}
+        };
+    }
+    json link = {
+        {"targetUri", targetUri},
+        {"targetRange", jsonRange(targetRange)},
+        {"targetSelectionRange", jsonRange(targetRange)}
+    };
+    if (auto originInfo = SemanticQuery::hover(node, compLine, compCol)) {
+        if (originInfo->length > 0) {
+            link["originSelectionRange"] = jsonRange(mapper.toLspRange(originInfo->loc.Line, originInfo->loc.Col, originInfo->length));
+        }
+    }
+    return json::array({link});
+}
+
 } // namespace
 
 LSPHandler::LSPHandler() : m_debounceDelay(200) {
@@ -231,6 +266,9 @@ void LSPHandler::handleInitialize(const json& request) {
         }
     }
     m_positionEncoding = negotiatePositionEncoding(clientEncodings);
+
+    auto textDocCaps = capabilities.value("textDocument", json::object());
+    m_linkSupport = textDocCaps.value("definition", json::object()).value("linkSupport", false);
 
     std::vector<std::string> folders;
     if (params.contains("workspaceFolders") && params["workspaceFolders"].is_array()) {
@@ -759,20 +797,18 @@ void LSPHandler::doDefinition(json id, std::string uri, LspPosition pos, std::sh
                 // case gets full UTF-16-aware conversion, since it's the
                 // only one where a preceding non-ASCII character on the
                 // line could otherwise throw the column off.
+                // Target selection width now uses the real name length
+                // (doc 07 P2.5) instead of a 1-char caret, wherever
+                // getDeclarationLoc() knows it.
+                int len = std::max(declLocOpt->length, 1);
                 LspRange range;
                 if (targetUri == uri) {
-                    range = mapper.toLspRange(declLocOpt->loc.Line, declLocOpt->loc.Col, 1);
+                    range = mapper.toLspRange(declLocOpt->loc.Line, declLocOpt->loc.Col, len);
                 } else {
                     range.start = {declLocOpt->loc.Line - 1, declLocOpt->loc.Col - 1};
-                    range.end = {declLocOpt->loc.Line - 1, declLocOpt->loc.Col};
+                    range.end = {declLocOpt->loc.Line - 1, declLocOpt->loc.Col - 1 + len};
                 }
-                result = {
-                    {"uri", targetUri},
-                    {"range", {
-                        {"start", {{"line", range.start.line}, {"character", range.start.character}}},
-                        {"end", {{"line", range.end.line}, {"character", range.end.character}}}
-                    }}
-                };
+                result = buildDefinitionResult(targetUri, range, m_linkSupport, node, compLine, compCol, mapper);
             }
         }
     }
@@ -826,20 +862,15 @@ void LSPHandler::doTypeDefinition(json id, std::string uri, LspPosition pos, std
             }
 
             if (haveTarget) {
+                int len = std::max(typeLocOpt->length, 1);
                 LspRange range;
                 if (targetUri == uri) {
-                    range = mapper.toLspRange(typeLocOpt->loc.Line, typeLocOpt->loc.Col, 1);
+                    range = mapper.toLspRange(typeLocOpt->loc.Line, typeLocOpt->loc.Col, len);
                 } else {
                     range.start = {typeLocOpt->loc.Line - 1, typeLocOpt->loc.Col - 1};
-                    range.end = {typeLocOpt->loc.Line - 1, typeLocOpt->loc.Col};
+                    range.end = {typeLocOpt->loc.Line - 1, typeLocOpt->loc.Col - 1 + len};
                 }
-                result = {
-                    {"uri", targetUri},
-                    {"range", {
-                        {"start", {{"line", range.start.line}, {"character", range.start.character}}},
-                        {"end", {{"line", range.end.line}, {"character", range.end.character}}}
-                    }}
-                };
+                result = buildDefinitionResult(targetUri, range, m_linkSupport, node, compLine, compCol, mapper);
             }
         }
     }

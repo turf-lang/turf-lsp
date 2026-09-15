@@ -55,6 +55,10 @@ struct SemanticToken {
 struct SymbolLocation {
     ResolverSourceLocation loc;
     std::string moduleName;
+    // Length of the target's own name at `loc`, for a precise
+    // `targetSelectionRange` (doc 07 P2.5) instead of a 1-char caret.
+    // Defaults to 1 for the rare case a caller doesn't know it better.
+    int length = 1;
 };
 
 // A hover result: the rendered markdown plus the span of the hovered token
