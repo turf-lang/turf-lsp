@@ -1098,6 +1098,43 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
         int compLine, compCol;
         mapper.toCompilerLineCol(pos, compLine, compCol);
 
+        // `import mod::<prefix>` (doc 05 G2's other half): `mod` isn't
+        // imported into THIS document yet -- that's literally what this
+        // statement is doing -- so its exported symbols can't come from
+        // this document's own symbol table at all, unlike every other
+        // trigger kind below. Detected and handled entirely separately,
+        // before any of that machinery runs.
+        std::string importSymbolModule;
+        if (SemanticQuery::isImportSymbolTrigger(prefixText, importSymbolModule)) {
+            std::vector<CompletionItem> completions;
+            std::string resolved = ResolveModuleFile(importSymbolModule, uriToPath(uri));
+            if (!resolved.empty()) {
+                std::ifstream targetFile(resolved);
+                if (targetFile) {
+                    std::stringstream buf;
+                    buf << targetFile.rdbuf();
+                    // A fresh, independent analysis of the TARGET module's
+                    // own file -- never stored back via setAnalysis(),
+                    // since this uri isn't even the document being
+                    // completed.
+                    auto moduleAnalysis = m_compiler.analyze(buf.str(), resolved, cancelled);
+                    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+                    if (moduleAnalysis) completions = SemanticQuery::getModuleExportedSymbols(*moduleAnalysis);
+                }
+            }
+            for (const auto& item : completions) {
+                json lspItem = {{"label", item.label}, {"kind", item.kind}};
+                if (!item.detail.empty()) lspItem["detail"] = item.detail;
+                if (!item.insertSnippet.empty()) {
+                    lspItem["insertText"] = item.insertSnippet;
+                    lspItem["insertTextFormat"] = 2; // Snippet
+                }
+                items.push_back(std::move(lspItem));
+            }
+            sendResponse(id, {{"isIncomplete", false}, {"items", items}});
+            return;
+        }
+
         // Try the already-cached (and, since ensureFreshAnalysis self-
         // heals, always up-to-date-or-refreshed) analysis first for an
         // `Ident::` trigger specifically, instead of always paying for a

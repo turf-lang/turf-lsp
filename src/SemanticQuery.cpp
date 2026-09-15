@@ -1133,3 +1133,52 @@ std::optional<SymbolLocation> SemanticQuery::getFunctionDeclLoc(const DocumentAn
     }
     return std::nullopt;
 }
+
+bool SemanticQuery::isImportSymbolTrigger(const std::string& text, std::string& outModuleName) {
+    int pos = static_cast<int>(text.size());
+    int prefixStart = pos;
+    while (prefixStart > 0 && isIdentChar(text[prefixStart - 1])) prefixStart--;
+
+    // Must be right after a `::` (mirrors classifyTrigger()'s own
+    // ScopeAccess detection -- duplicated rather than shared because that
+    // one lives inside an anonymous namespace scoped to getCompletions()'s
+    // internals, and this needs to be callable standalone, before any
+    // analysis has run at all).
+    if (prefixStart < 2 || text[prefixStart - 1] != ':' || text[prefixStart - 2] != ':') return false;
+
+    int baseEnd = prefixStart - 2;
+    int baseStart = baseEnd;
+    while (baseStart > 0 && isIdentChar(text[baseStart - 1])) baseStart--;
+    if (baseStart == baseEnd) return false; // "::foo" with no module name at all
+
+    if (baseStart == 0) return false; // nothing before the module name to be "import"
+    size_t textEnd = text.find_last_not_of(" \t", baseStart - 1);
+    if (textEnd == std::string::npos || textEnd < 5) return false;
+    if (text.compare(textEnd - 5, 6, "import") != 0) return false;
+    if (textEnd != 5 && isIdentChar(text[textEnd - 6])) return false; // "reimport net::" must not match
+
+    outModuleName = text.substr(baseStart, baseEnd - baseStart);
+    return true;
+}
+
+std::vector<CompletionItem> SemanticQuery::getModuleExportedSymbols(const DocumentAnalysis& moduleAnalysis) {
+    std::vector<CompletionItem> items;
+    if (!moduleAnalysis.resolver) return items;
+    const ResolverSymbolTable& symTable = moduleAnalysis.resolver->symbolTable();
+
+    for (const auto& name : symTable.getAllCurrentFileFunctionNames()) {
+        if (name.find('.') != std::string::npos) continue; // struct methods, not `mod::name`-callable directly
+        if (auto sym = firstOverload(symTable, name, "")) {
+            CompletionItem item;
+            item.label = name;
+            item.kind = 3; // Function
+            item.detail = sym->signature();
+            item.insertSnippet = buildCallSnippet(name, *sym, false);
+            items.push_back(std::move(item));
+        }
+    }
+    for (const auto& name : symTable.getAllStructNames()) items.push_back({name, 22, "struct", ""});
+    for (const auto& name : symTable.getAllEnumNames()) items.push_back({name, 22, "enum", ""});
+    for (const auto& name : symTable.getModuleConstantNames("")) items.push_back({name, 21, "constant", ""});
+    return items;
+}

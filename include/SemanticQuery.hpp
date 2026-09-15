@@ -156,4 +156,28 @@ public:
                                                        const std::string& lineTextBeforeCursor,
                                                        const std::string& documentPath = "",
                                                        int cursorLine = 0);
+
+    // doc 05 G2's `import mod::<prefix>` case: detects the shape purely
+    // textually (no analysis needed -- `mod` isn't imported into the
+    // current file yet, so nothing in ITS symbol table could answer this
+    // anyway) by checking that "import" is the whole word immediately
+    // before the `mod::` base, the same word-boundary check the bare
+    // `import <prefix>` trigger uses. Returns true and sets
+    // `outModuleName` on a match; leaves it untouched otherwise. Callable
+    // by LSPHandler BEFORE running any analysis at all, since the answer
+    // doesn't depend on one.
+    static bool isImportSymbolTrigger(const std::string& lineTextBeforeCursor,
+                                      std::string& outModuleName);
+
+    // The functions/structs/enums/constants a module exports, read from an
+    // analysis of the MODULE'S OWN file (`moduleAnalysis` -- produced by
+    // analyzing that file as if it were the entry point, exactly what
+    // `import mod::<prefix>` completion needs: `mod` isn't imported into
+    // the CURRENT file yet, so its symbols aren't reachable through that
+    // file's own resolved symbol table at all). Reuses the same "current
+    // file" queries getCompletions()'s Bare-word branch already uses,
+    // just pointed at a different DocumentAnalysis -- when a module is
+    // analyzed standalone, ITS own top-level declarations ARE its
+    // "current file" symbols.
+    static std::vector<CompletionItem> getModuleExportedSymbols(const DocumentAnalysis& moduleAnalysis);
 };
