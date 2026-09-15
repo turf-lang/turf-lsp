@@ -916,7 +916,7 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
             auto completionAnalysis = m_compiler.analyze(patchedText, path, cancelled);
             if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
             if (completionAnalysis) {
-                completions = SemanticQuery::getCompletions(*completionAnalysis, prefixText);
+                completions = SemanticQuery::getCompletions(*completionAnalysis, prefixText, path);
             }
         }
 

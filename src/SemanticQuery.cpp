@@ -1,5 +1,6 @@
 #include "SemanticQuery.hpp"
 #include "ASTVisitor.h"
+#include "Parser.h" // ListAvailableModules() -- import completion (doc 05 G2)
 #include "Resolver.h"
 #include <cctype>
 #include <iostream>
@@ -567,9 +568,9 @@ public:
 };
 
 struct TriggerContext {
-    enum class Kind { ScopeAccess, MemberAccess, Bare };
+    enum class Kind { ScopeAccess, MemberAccess, Bare, Import };
     Kind kind;
-    std::string base;   // identifier before '::' or '.'; empty for Bare
+    std::string base;   // identifier before '::' or '.'; empty for Bare/Import
     std::string prefix; // partial identifier already typed after the trigger
 };
 
@@ -582,6 +583,23 @@ TriggerContext classifyTrigger(const std::string& text) {
     int prefixStart = pos;
     while (prefixStart > 0 && isIdentChar(text[prefixStart - 1])) prefixStart--;
     std::string prefix = text.substr(prefixStart, pos - prefixStart);
+
+    // `import <prefix>` -- bare module-name completion (doc 05 G2). Checked
+    // before the '::'/'.' checks below because "import net" has no trailing
+    // '::' or '.' of its own, so without this it would fall through to Bare
+    // (keywords/locals/current-file functions) -- wrong, there's no local
+    // variable or keyword spelled like a stdlib module name. turf-lang has
+    // no `from X import Y` form (confirmed by reading ParserModule.cpp --
+    // the only `from` in the grammar is `extern from "lib" fn ...`), so
+    // that's the only import shape to detect.
+    if (prefixStart > 0) {
+        size_t textEnd = text.find_last_not_of(" \t", prefixStart - 1);
+        if (textEnd != std::string::npos && textEnd >= 5 &&
+            text.compare(textEnd - 5, 6, "import") == 0 &&
+            (textEnd == 5 || !isIdentChar(text[textEnd - 6]))) {
+            return {TriggerContext::Kind::Import, "", prefix};
+        }
+    }
 
     if (prefixStart >= 2 && text[prefixStart - 1] == ':' && text[prefixStart - 2] == ':') {
         int baseEnd = prefixStart - 2;
@@ -662,12 +680,33 @@ structMethods(const ResolverSymbolTable& symTable, const std::string& structName
 } // namespace
 
 std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis& analysis,
-                                                           const std::string& lineTextBeforeCursor) {
+                                                           const std::string& lineTextBeforeCursor,
+                                                           const std::string& documentPath) {
     std::vector<CompletionItem> items;
-    if (!analysis.resolver) return items;
-    const ResolverSymbolTable& symTable = analysis.resolver->symbolTable();
 
     TriggerContext ctx = classifyTrigger(lineTextBeforeCursor);
+
+    // `import <prefix>` -- module-name completion (doc 05 G2). Answered
+    // from ListAvailableModules() (turf-lang's Parser.h), a pure filesystem
+    // lookup that needs no resolved AST at all -- unlike every other branch
+    // below, this doesn't require `analysis.resolver` to be non-null, which
+    // matters here specifically: an in-progress `import ` line (no `;` yet)
+    // is exactly the kind of buffer the patched-reanalysis path may not
+    // fully resolve.
+    if (ctx.kind == TriggerContext::Kind::Import) {
+        for (const auto& name : ListAvailableModules(documentPath)) {
+            CompletionItem item;
+            item.label = name;
+            item.kind = 9; // Module
+            item.detail = "module";
+            item.insertSnippet = name + ";";
+            items.push_back(std::move(item));
+        }
+        return items;
+    }
+
+    if (!analysis.resolver) return items;
+    const ResolverSymbolTable& symTable = analysis.resolver->symbolTable();
 
     if (ctx.kind == TriggerContext::Kind::ScopeAccess) {
         const std::string& base = ctx.base;

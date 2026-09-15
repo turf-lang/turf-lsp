@@ -85,6 +85,11 @@ public:
     // symbol table and AST -- real module functions/types after `io::`, real
     // struct fields/methods after `instance.`, real in-scope
     // variables/functions for a bare word, instead of a fixed keyword list.
+    // `documentPath` is the on-disk (or virtual) path of the document being
+    // completed -- used only for Import-context completion (`import
+    // <prefix>`), which needs it to resolve sibling `.tr` files next to the
+    // document via ListAvailableModules(). Every other trigger kind ignores it.
     static std::vector<CompletionItem> getCompletions(const DocumentAnalysis& analysis,
-                                                       const std::string& lineTextBeforeCursor);
+                                                       const std::string& lineTextBeforeCursor,
+                                                       const std::string& documentPath = "");
 };
