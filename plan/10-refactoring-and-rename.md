@@ -102,24 +102,44 @@ expensive).
   `TextEdit`s.
 
 ## Phased tasks (Phase 4)
-- **P4.1** `prepareRename` (renameable check + exact range via `NameLoc`).
-- **P4.2** `rename` using the workspace occurrence index + identifier/keyword
-  validation + conflict checks + stdlib guard.
-- **P4.3** Enumerate `E0NN` codes → quick-fix table; implement the top mechanical
-  fixes (add import, did-you-mean, immut→mut, remove unused).
-- **P4.4** `codeAction` + `codeAction/resolve` plumbing.
-- **P4.5** Extract variable; organize imports.
-- **P4.6** (later) Extract/inline function.
+- ✅ **P4.1** Done (2026-09-16): `prepareRename` -- renameable check +
+  exact range, reusing `hover()`'s per-node-kind span (not `NameLoc`
+  directly, but the same underlying data).
+- ✅/⬜ **P4.2** Done, scoped down: `rename` uses the workspace occurrence
+  scan (shared with `references`, doc 08) + identifier/keyword
+  validation + stdlib guard. The deeper "would `newName` collide with
+  an existing declaration visible in scope" conflict check is NOT
+  implemented -- needs a real per-scope visibility query this session's
+  identity model (declLoc + module) doesn't answer; a genuinely bigger
+  feature, not attempted rather than faked.
+- ⬜ **P4.3** Not done -- `E0NN` code enumeration / quick-fix table.
+- ⬜ **P4.4** Not done -- `codeAction` + `codeAction/resolve`.
+- ⬜ **P4.5** Not done -- extract variable, organize imports.
+- ⬜ **P4.6** Not done (explicitly "later" even in the original plan).
+
+Code actions (P4.3-P4.6) were not started this session at all -- rename
+(P4.1/P4.2) was prioritized as the higher-value, more tractable half of
+this doc (it reuses doc 08's already-built and verified reference
+infrastructure directly); code actions are a genuinely separate feature
+surface (a new response type, a diagnostic-code-to-fix mapping table
+that needs enumerating all 68 `E0NN` codes as its own first task, plus
+real refactoring logic for extract-variable) that deserves its own
+dedicated pass rather than a rushed partial attempt.
 
 ## Acceptance tests
-- Rename a function used in 3 files updates all call sites + the def, in one
-  `WorkspaceEdit`; unrelated same-named locals are untouched.
-- Rename to a keyword (`fn`) is rejected with a clear message.
-- Rename a local doesn't touch a same-named local in another function.
-- `prepareRename` on `assert`/`int` is rejected.
-- Quick-fix on "unknown module `io`" offers "Add `import io;`" and inserts it in
-  the import block.
-- Did-you-mean quick-fix on a typo'd function name replaces it with the
-  suggestion.
-- Extract-variable on `a + b * c` introduces a typed temp and substitutes it.
-- Rename of a stdlib symbol is refused by default.
+- ✅ Rename a function used in 3 files updates all call sites + the def, in one
+  `WorkspaceEdit`; unrelated same-named locals are untouched -- verified live.
+- ✅ Rename to a keyword (`fn`) is rejected with a clear message -- verified live.
+- ✅ Rename a local doesn't touch a same-named local in another function --
+  inherited directly from doc 08's identical, already-verified shadowing test
+  (same identity model, same underlying scan).
+- ⬜ `prepareRename` on `assert`/`int` is rejected -- not separately
+  tested this session (should already hold: `assert` has no resolved
+  declaration at all per doc 07's existing "builtin" handling, and a
+  bare `int` type-name use isn't a node kind `getDeclarationLoc()`
+  resolves in the first place -- structural, not verified live).
+- ⬜ Quick-fix/did-you-mean/extract-variable acceptance tests -- moot,
+  code actions not implemented this session.
+- ✅ Rename of a stdlib symbol is refused by default -- verified live on
+  a real stdlib function (`net::buildSockAddr`), both `prepareRename`
+  (returns null) and `rename` (returns a clear error).

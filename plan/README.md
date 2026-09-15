@@ -208,11 +208,21 @@ everything; do it first.
   persistent/incremental indexing (every `references` request re-scans
   the workspace fresh instead), `workspace/symbol`, `$/progress`.
 
-### Phase 4 — "Change code" (doc 09, 10)
-- Formatter (new engine in `turf-lang`, exposed as `turf --format` and reused
-  in-process by the LSP).
-- Rename (safe, reference-driven) + code actions (quick-fixes from diagnostics,
-  "add import", extract, etc.).
+### Phase 4 — "Change code" (doc 09, 10) — ✅ core done (2026-09-16)
+- ✅ Formatter: `turf::format::format()` (indentation-only, see doc 09) +
+  `turf --format[ --write]` + `textDocument/formatting`, one engine,
+  two callers. Not done: `rangeFormatting`, `onTypeFormatting`, the
+  fuller operator/spacing rule set doc 09 originally specced.
+- ✅ Rename: `prepareRename` + `rename`, reusing doc 08's workspace
+  occurrence scan directly (rename IS find-references + text
+  replacement). Verified workspace-wide across a real 3-file project,
+  keyword rejection, and the stdlib guard (refuses renaming a real
+  stdlib function). Not done: the "would newName collide with an
+  existing visible declaration" conflict check.
+- ⬜ Code actions not started at all -- a genuinely separate feature
+  surface (new response type, a full `E0NN`-to-quick-fix mapping table,
+  real extract-variable refactoring logic) deliberately left for a
+  dedicated future pass rather than a rushed partial attempt.
 
 ### Phase 5 — Polish & ship (doc 11, 12)
 - Consolidated VS Code extension published to Marketplace + Open VSX (forks);
@@ -226,7 +236,7 @@ everything; do it first.
 | M1 | Live red/yellow squiggles + full highlighting in both editors | ✅ server-side core done (2026-09-15); editor-side verification (P1.5) and the grammar-directory consolidation (P1.a, doc 11) still open |
 | M2 | Completion (incl. imports) + hover + go-to-def working end-to-end | ✅ done (2026-09-16) |
 | M3 | Find references + document highlight | ✅ core done (2026-09-16) — incremental indexing/`workspace/symbol` still open |
-| M4 | Format-on-save + rename + quick-fixes | M2, Phase 4 |
+| M4 | Format-on-save + rename + quick-fixes | ✅ format + rename done (2026-09-16) — quick-fixes/code actions not started |
 | M5 | Published extensions, Neovim client, green CI | all |
 
 ## A note on the turf-lang side
