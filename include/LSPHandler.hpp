@@ -6,9 +6,11 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 #include <nlohmann/json.hpp>
 
 #include "CompilerService.hpp"
@@ -60,13 +62,23 @@ private:
     void handleHover(const json& request);
     void handleDefinition(const json& request);
     void handleSemanticTokens(const json& request);
+    void handleSemanticTokensDelta(const json& request);
 
     // ---- Work bodies (worker thread only) ----
     void doCompletion(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doHover(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doDefinition(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doSemanticTokens(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doSemanticTokensDelta(json id, std::string uri, std::string previousResultId,
+                                std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doPublishDiagnostics(std::string uri);
+
+    // Shared by doSemanticTokens/doSemanticTokensDelta: builds the flat,
+    // already-delta-encoded (per the LSP data-array format, not to be
+    // confused with the full/delta REQUEST) [deltaLine, deltaStartChar,
+    // length, tokenType, tokenModifiers] quintuples for `analysis`, with
+    // positions converted through `mapper` (doc 04 P1.b/P1.d).
+    std::vector<int> computeSemanticTokenData(const DocumentAnalysis& analysis, const PositionMapper& mapper) const;
 
     // Returns the cached analysis if it's already for the document's
     // current text version, otherwise runs a fresh analyze() (worker
@@ -96,6 +108,7 @@ private:
     void sendError(const json& id, int code, const std::string& message);
 
     std::string uriToPath(const std::string& uri) const;
+    std::string pathToUri(const std::string& path) const;
 
     DocumentStore m_documents;
     CompilerService m_compiler;
@@ -138,4 +151,27 @@ private:
     // semanticTokens).
     std::mutex m_cancelMutex;
     std::unordered_map<std::string, std::shared_ptr<std::atomic<bool>>> m_cancelFlags;
+
+    // Tracks, per primary document uri, the set of OTHER (imported-module)
+    // uris its last diagnostics publish sent non-empty diagnostics to --
+    // diffed against the next publish so a diagnostic that moves or
+    // disappears from an imported file still gets an empty-array publish to
+    // clear its now-stale squiggle (doc 03 P1.4). Touched from both the
+    // worker thread (doPublishDiagnostics) and the I/O thread
+    // (handleDidClose publishes directly, bypassing the queue, for prompt
+    // squiggle-clearing on close) -- hence its own mutex.
+    std::mutex m_diagMutex;
+    std::unordered_map<std::string, std::set<std::string>> m_secondaryDiagUris;
+
+    // Last full semantic-tokens result per document uri, for
+    // textDocument/semanticTokens/full/delta (doc 04 P1.d). Worker-thread-
+    // only (doSemanticTokens/doSemanticTokensDelta are the sole readers and
+    // writers, and both only ever run as enqueued worker-thread work), so
+    // unlike m_documents/m_secondaryDiagUris this needs no mutex of its own.
+    struct CachedSemanticTokens {
+        std::string resultId;
+        std::vector<int> data;
+    };
+    std::unordered_map<std::string, CachedSemanticTokens> m_semanticTokensCache;
+    int64_t m_nextSemanticTokensResultId = 0;
 };

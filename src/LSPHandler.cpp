@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <string>
 
 namespace {
@@ -67,6 +68,33 @@ struct ScopeExit {
     ~ScopeExit() { if (fn) fn(); }
 };
 
+// Converts a compiler-native diagnostic location to an LSP range (doc 03
+// P1.3/P1.4). `primaryMapper` is built from the document actually being
+// analyzed's live buffer, so it's only valid for a location IN that same
+// file (`loc.filename == primaryPath`) -- a location the compiler attributed
+// to an imported module points at a file whose buffer isn't loaded here (it
+// may not even be open in the editor), so it falls back to the same raw
+// 1-indexed -> 0-indexed arithmetic doDefinition()'s cross-file branch uses,
+// correct as long as the span itself is ASCII (true for every identifier
+// turf-lang's lexer accepts; see that branch's own rationale comment).
+LspRange rangeForDiagLocation(const MappedDiagLocation& loc, const std::string& primaryPath,
+                               const PositionMapper& primaryMapper) {
+    if (loc.filename == primaryPath) {
+        return primaryMapper.toLspRange(loc.line, loc.col, loc.byteLen);
+    }
+    LspRange r;
+    r.start = {loc.line - 1, loc.col - 1};
+    r.end = {loc.line - 1, loc.col - 1 + std::max(loc.byteLen, 1)};
+    return r;
+}
+
+json jsonRange(const LspRange& r) {
+    return {
+        {"start", {{"line", r.start.line}, {"character", r.start.character}}},
+        {"end", {{"line", r.end.line}, {"character", r.end.character}}}
+    };
+}
+
 } // namespace
 
 LSPHandler::LSPHandler() : m_debounceDelay(200) {
@@ -105,6 +133,11 @@ bool LSPHandler::isRequest(const json& msg) const {
 std::string LSPHandler::uriToPath(const std::string& uri) const {
     if (uri.rfind("file://", 0) == 0) return uri.substr(7);
     return uri;
+}
+
+std::string LSPHandler::pathToUri(const std::string& path) const {
+    if (path.rfind("file://", 0) == 0) return path; // already a uri (defensive; callers pass real paths)
+    return "file://" + path;
 }
 
 void LSPHandler::handleMessage(const std::string& message) {
@@ -174,6 +207,7 @@ void LSPHandler::dispatch(const json& msg) {
     if (method == "textDocument/hover") { handleHover(msg); return; }
     if (method == "textDocument/definition") { handleDefinition(msg); return; }
     if (method == "textDocument/semanticTokens/full") { handleSemanticTokens(msg); return; }
+    if (method == "textDocument/semanticTokens/full/delta") { handleSemanticTokensDelta(msg); return; }
 
     if (req) {
         sendError(id, -32601, "Method not found: " + method);
@@ -226,7 +260,7 @@ void LSPHandler::handleInitialize(const json& request) {
                     {"tokenTypes", {"variable", "function", "keyword", "type", "parameter", "struct", "string", "number", "operator", "namespace", "property", "enumMember", "method"}},
                     {"tokenModifiers", {"declaration", "readonly"}}
                 }},
-                {"full", true}
+                {"full", {{"delta", true}}}
             }},
             {"completionProvider", {
                 {"resolveProvider", false},
@@ -329,11 +363,35 @@ void LSPHandler::handleDidClose(const json& notification) {
         m_pendingDebounce.erase(uri); // drop any debounce still in flight for the now-closed document
     }
 
+    // Clear squiggles this document's own uri was carrying, plus any
+    // imported-module uris its last analysis pass attributed diagnostics to
+    // (doc 03 P1.4) -- best-effort: if another still-open document also
+    // imports the same module and legitimately still has diagnostics to
+    // report there, its own next publish will re-assert them. There is no
+    // cross-primary reference counting here; this is a deliberate
+    // simplification, not a correctness guarantee for that edge case.
+    std::set<std::string> staleSecondary;
+    {
+        std::lock_guard<std::mutex> lock(m_diagMutex);
+        auto it = m_secondaryDiagUris.find(uri);
+        if (it != m_secondaryDiagUris.end()) {
+            staleSecondary = std::move(it->second);
+            m_secondaryDiagUris.erase(it);
+        }
+    }
+
     sendMessage({
         {"jsonrpc", "2.0"},
         {"method", "textDocument/publishDiagnostics"},
         {"params", {{"uri", uri}, {"diagnostics", json::array()}}}
     });
+    for (const auto& secondaryUri : staleSecondary) {
+        sendMessage({
+            {"jsonrpc", "2.0"},
+            {"method", "textDocument/publishDiagnostics"},
+            {"params", {{"uri", secondaryUri}, {"diagnostics", json::array()}}}
+        });
+    }
 }
 
 void LSPHandler::handleCompletion(const json& request) {
@@ -376,6 +434,18 @@ void LSPHandler::handleSemanticTokens(const json& request) {
 
     auto cancelFlag = registerCancellable(id);
     enqueueWork([this, id, uri, cancelFlag]() { doSemanticTokens(id, uri, cancelFlag); });
+}
+
+void LSPHandler::handleSemanticTokensDelta(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    std::string previousResultId = params.value("previousResultId", "");
+
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, previousResultId, cancelFlag]() {
+        doSemanticTokensDelta(id, uri, previousResultId, cancelFlag);
+    });
 }
 
 std::shared_ptr<std::atomic<bool>> LSPHandler::registerCancellable(const json& id) {
@@ -479,18 +549,94 @@ std::shared_ptr<const DocumentAnalysis> LSPHandler::ensureFreshAnalysis(const st
 void LSPHandler::doPublishDiagnostics(std::string uri) {
     if (!m_documents.contains(uri)) return; // closed before the worker got to it
 
-    // Still runs the analysis (so it's cached for the next on-demand
-    // request that lands on this version) even though the diagnostics
-    // array sent below is always empty -- see doc 03 for why publishing
-    // is currently suppressed; re-enabling is a one-line change once the
-    // false-positive sources it was turned off for are sorted out.
-    (void)ensureFreshAnalysis(uri);
+    auto analysis = ensureFreshAnalysis(uri);
+    if (!analysis) return; // closed underneath us mid-analysis
 
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) return;
+
+    std::string primaryPath = uriToPath(uri);
+    PositionMapper mapper(textSnap->text, m_positionEncoding);
+
+    // Group by which real file each diagnostic belongs to (doc 03
+    // "Multi-file"): most land on primaryPath, but one raised while
+    // resolving an `import`ed module is attributed to THAT file's path and
+    // must be published against its own uri, not the primary document's.
+    std::map<std::string, std::vector<json>> byFile;
+    for (const auto& md : analysis->diagnostics) {
+        json d = {
+            {"range", jsonRange(rangeForDiagLocation(md.loc, primaryPath, mapper))},
+            {"severity", md.isWarning ? 2 : 1},
+            {"source", "turf"},
+            {"message", md.message}
+        };
+        if (!md.code.empty()) d["code"] = md.code;
+        if (!md.related.empty()) {
+            json relArr = json::array();
+            for (const auto& rel : md.related) {
+                relArr.push_back({
+                    {"location", {
+                        {"uri", pathToUri(rel.loc.filename)},
+                        {"range", jsonRange(rangeForDiagLocation(rel.loc, primaryPath, mapper))}
+                    }},
+                    {"message", rel.description}
+                });
+            }
+            d["relatedInformation"] = relArr;
+        }
+        byFile[md.loc.filename].push_back(std::move(d));
+    }
+
+    // Always publish for the primary document itself, even with zero
+    // diagnostics -- this is what clears stale squiggles once the last
+    // error on a line is fixed. `version` lets the client discard this
+    // publish if a newer edit has already superseded it.
+    json primaryArr = json::array();
+    auto primaryIt = byFile.find(primaryPath);
+    if (primaryIt != byFile.end()) {
+        for (auto& d : primaryIt->second) primaryArr.push_back(std::move(d));
+    }
     sendMessage({
         {"jsonrpc", "2.0"},
         {"method", "textDocument/publishDiagnostics"},
-        {"params", {{"uri", uri}, {"diagnostics", json::array()}}}
+        {"params", {{"uri", uri}, {"version", textSnap->version}, {"diagnostics", primaryArr}}}
     });
+
+    // Secondary (imported-module) files: publish each non-empty group, then
+    // clear (empty-array publish) any uri that carried diagnostics on the
+    // PREVIOUS publish for this primary document but not this one --
+    // without this, a fixed import-side error would leave a stale squiggle
+    // in a file that's no longer being told anything is wrong with it.
+    std::set<std::string> newSecondary;
+    for (auto& [filename, diags] : byFile) {
+        if (filename == primaryPath) continue;
+        std::string secondaryUri = pathToUri(filename);
+        newSecondary.insert(secondaryUri);
+        json arr = json::array();
+        for (auto& d : diags) arr.push_back(std::move(d));
+        sendMessage({
+            {"jsonrpc", "2.0"},
+            {"method", "textDocument/publishDiagnostics"},
+            {"params", {{"uri", secondaryUri}, {"diagnostics", arr}}}
+        });
+    }
+
+    std::set<std::string> staleSecondary;
+    {
+        std::lock_guard<std::mutex> lock(m_diagMutex);
+        auto& prevSecondary = m_secondaryDiagUris[uri];
+        for (const auto& prevUri : prevSecondary) {
+            if (!newSecondary.count(prevUri)) staleSecondary.insert(prevUri);
+        }
+        prevSecondary = std::move(newSecondary);
+    }
+    for (const auto& staleUri : staleSecondary) {
+        sendMessage({
+            {"jsonrpc", "2.0"},
+            {"method", "textDocument/publishDiagnostics"},
+            {"params", {{"uri", staleUri}, {"diagnostics", json::array()}}}
+        });
+    }
 }
 
 void LSPHandler::doHover(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag) {
@@ -601,23 +747,9 @@ void LSPHandler::doDefinition(json id, std::string uri, LspPosition pos, std::sh
     sendResponse(id, result);
 }
 
-void LSPHandler::doSemanticTokens(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag) {
-    std::string idKey = id.dump();
-    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
-
-    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
-    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
-    if (!m_documents.contains(uri)) { sendError(id, -32801, "Content modified"); return; }
-
-    auto analysis = ensureFreshAnalysis(uri, cancelled);
-    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
-    if (!analysis) { sendResponse(id, nullptr); return; }
-
-    auto textSnap = m_documents.getText(uri);
-    if (!textSnap) { sendError(id, -32801, "Content modified"); return; }
-
-    PositionMapper mapper(textSnap->text, m_positionEncoding);
-    auto tokens = SemanticQuery::getSemanticTokens(*analysis);
+std::vector<int> LSPHandler::computeSemanticTokenData(const DocumentAnalysis& analysis,
+                                                        const PositionMapper& mapper) const {
+    auto tokens = SemanticQuery::getSemanticTokens(analysis);
 
     std::vector<int> data;
     int prevLine = 0;
@@ -639,8 +771,89 @@ void LSPHandler::doSemanticTokens(json id, std::string uri, std::shared_ptr<std:
         prevLine = p.line;
         prevChar = p.character;
     }
+    return data;
+}
 
-    sendResponse(id, {{"data", data}});
+void LSPHandler::doSemanticTokens(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!m_documents.contains(uri)) { sendError(id, -32801, "Content modified"); return; }
+
+    auto analysis = ensureFreshAnalysis(uri, cancelled);
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!analysis) { sendResponse(id, nullptr); return; }
+
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) { sendError(id, -32801, "Content modified"); return; }
+
+    PositionMapper mapper(textSnap->text, m_positionEncoding);
+    std::vector<int> data = computeSemanticTokenData(*analysis, mapper);
+
+    // Cached for a later full/delta request against this same uri (doc 04
+    // P1.d) -- worker-thread-only state, see the member's own doc comment.
+    std::string resultId = std::to_string(++m_nextSemanticTokensResultId);
+    m_semanticTokensCache[uri] = CachedSemanticTokens{resultId, data};
+
+    sendResponse(id, {{"resultId", resultId}, {"data", data}});
+}
+
+void LSPHandler::doSemanticTokensDelta(json id, std::string uri, std::string previousResultId,
+                                        std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!m_documents.contains(uri)) { sendError(id, -32801, "Content modified"); return; }
+
+    auto analysis = ensureFreshAnalysis(uri, cancelled);
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!analysis) { sendResponse(id, nullptr); return; }
+
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) { sendError(id, -32801, "Content modified"); return; }
+
+    PositionMapper mapper(textSnap->text, m_positionEncoding);
+    std::vector<int> newData = computeSemanticTokenData(*analysis, mapper);
+    std::string newResultId = std::to_string(++m_nextSemanticTokensResultId);
+
+    auto cacheIt = m_semanticTokensCache.find(uri);
+    bool havePrevious = cacheIt != m_semanticTokensCache.end() && cacheIt->second.resultId == previousResultId;
+
+    json result;
+    if (!havePrevious) {
+        // Per spec: the server may return a full SemanticTokens result
+        // instead of a delta whenever it can't (or chooses not to) compute
+        // one against `previousResultId` -- e.g. a cold cache after a
+        // server restart, or the client citing a resultId this server
+        // never issued (a stale client, a raced full/delta interleaving).
+        result = {{"resultId", newResultId}, {"data", newData}};
+    } else {
+        const std::vector<int>& oldData = cacheIt->second.data;
+        size_t minLen = std::min(oldData.size(), newData.size());
+        size_t prefix = 0;
+        while (prefix < minLen && oldData[prefix] == newData[prefix]) ++prefix;
+        size_t suffix = 0;
+        while (suffix < minLen - prefix &&
+               oldData[oldData.size() - 1 - suffix] == newData[newData.size() - 1 - suffix]) {
+            ++suffix;
+        }
+        size_t deleteCount = oldData.size() - prefix - suffix;
+        std::vector<int> middle(newData.begin() + static_cast<long>(prefix),
+                                 newData.end() - static_cast<long>(suffix));
+
+        json edits = json::array();
+        if (deleteCount != 0 || !middle.empty()) {
+            edits.push_back({{"start", prefix}, {"deleteCount", deleteCount}, {"data", middle}});
+        }
+        result = {{"resultId", newResultId}, {"edits", edits}};
+    }
+
+    m_semanticTokensCache[uri] = CachedSemanticTokens{newResultId, std::move(newData)};
+    sendResponse(id, result);
 }
 
 void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag) {

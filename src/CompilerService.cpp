@@ -5,6 +5,7 @@
 #include "TypeChecker.h"
 #include "Errors.h"
 #include "SymbolTable.h"
+#include <cctype>
 #include <iostream>
 #include <sstream>
 #include <cstring>
@@ -37,6 +38,85 @@ static void skipToNextTopLevelBoundary() {
     } while (g_braceDepth > 0);
 }
 
+// Many typed errors (see e.g. ErrorsScope.h's NameError) bake ANSI color
+// escapes directly into Diag::Msg/Hint at construction time -- by design,
+// for the CLI's own terminal output (SLMIntegration.cpp strips them right
+// back out before handing error text to the SLM prompt, for the same
+// reason: they're display-only formatting, not part of the message). An
+// LSP diagnostic's `message` is plain text rendered by the editor's own UI
+// -- passing raw escape codes through would show as garbage (or silently
+// swallowed, client-dependent), never as color. Stripped here rather than
+// at the source, matching how SLMIntegration.cpp already treats this as
+// the consuming side's responsibility, not something to unwind at origin.
+static std::string stripAnsiCodes(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size();) {
+        if (s[i] == '\x1b' && i + 1 < s.size() && s[i + 1] == '[') {
+            size_t j = i + 2;
+            while (j < s.size() && s[j] != 'm') ++j;
+            i = (j < s.size()) ? j + 1 : j;
+        } else {
+            out += s[i];
+            ++i;
+        }
+    }
+    return out;
+}
+
+// Widens a diagnostic's 1-byte point location to the span of the
+// identifier/token it points at (doc 03 P1.3) -- a whole-token squiggle
+// reads far better than a caret. The compiler doesn't carry real end-
+// columns yet (SourceLocation::EndLine/EndCol stay at their -1 sentinel),
+// so this is a best-effort scan through the already-captured source line,
+// not a real lexer re-tokenization. Falls back to 1 byte whenever there's
+// nothing identifier-shaped at the location (punctuation-only diagnostics,
+// a hand-built {0,0} sentinel, or a filename/line AllSourceLines doesn't
+// have -- e.g. a location that came from a file which failed to open).
+static int widenDiagTokenByteLen(const std::string& filename, int line, int col) {
+    auto it = AllSourceLines.find(filename);
+    if (it == AllSourceLines.end()) return 1;
+    const auto& lines = it->second;
+    if (line < 1 || static_cast<size_t>(line) > lines.size()) return 1;
+    const std::string& lineText = lines[static_cast<size_t>(line - 1)];
+    if (col < 1 || static_cast<size_t>(col - 1) >= lineText.size()) return 1;
+
+    size_t start = static_cast<size_t>(col - 1);
+    auto isIdentChar = [](unsigned char c) { return std::isalnum(c) || c == '_'; };
+    if (!isIdentChar(static_cast<unsigned char>(lineText[start]))) return 1;
+
+    size_t end = start;
+    while (end < lineText.size() && isIdentChar(static_cast<unsigned char>(lineText[end]))) ++end;
+    return static_cast<int>(end - start);
+}
+
+// Converts one compiler Diag into the LSP-shape-agnostic intermediate
+// LSPHandler needs to finish the job (doc 03): resolves the diag's own
+// (possibly-imported-module) filename, widens its point location, and
+// folds Hint into the message text (LSP has no separate "hint" field).
+static MappedDiagnostic mapDiagnostic(const DiagnosticEngine::Diag& diag, const std::string& analyzedFilename) {
+    MappedDiagnostic md;
+    md.loc.filename = !diag.Filename.empty() ? diag.Filename : analyzedFilename;
+    md.loc.line = diag.Loc.Line;
+    md.loc.col = diag.Loc.Col;
+    md.loc.byteLen = widenDiagTokenByteLen(md.loc.filename, md.loc.line, md.loc.col);
+    md.isWarning = diag.IsWarning;
+    md.code = diag.Code;
+    md.message = stripAnsiCodes(diag.Msg);
+    if (!diag.Hint.empty()) md.message += "\nhint: " + stripAnsiCodes(diag.Hint);
+
+    for (const auto& rel : diag.RelatedLocations) {
+        MappedRelatedInfo mri;
+        mri.loc.filename = !rel.Loc.Filename.empty() ? rel.Loc.Filename : md.loc.filename;
+        mri.loc.line = rel.Loc.Line;
+        mri.loc.col = rel.Loc.Col;
+        mri.loc.byteLen = widenDiagTokenByteLen(mri.loc.filename, mri.loc.line, mri.loc.col);
+        mri.description = stripAnsiCodes(rel.Description);
+        md.related.push_back(std::move(mri));
+    }
+    return md;
+}
+
 std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view source, std::string_view filename,
                                                              const std::function<bool()>& isCancelled) {
     auto analysis = std::make_unique<DocumentAnalysis>();
@@ -44,6 +124,22 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
     DiagnosticEngine::clearDiagnostics();
     ClearParsedTopLevelASTs();
     resetLexer();
+
+    // Never on for the LSP (doc 03 P1.1): `--smart` SLM suggestions are
+    // slow and nondeterministic, wrong for a pass that reruns on every
+    // debounced keystroke. Forced unconditionally rather than trusted to
+    // already default false -- this is a documented contract of the LSP's
+    // analysis pass, not an assumption about whatever main.cpp's own CLI
+    // arg parsing happened to leave it at (which this binary never runs).
+    g_AIEnabled = false;
+
+    // add() caps at one primary error per source line by default (its own
+    // doc comment) -- fine for a CLI's noise reduction, wrong for an LSP:
+    // a second genuine error on an already-errored line must still surface
+    // as its own squiggle (doc 03 P1.1). Saved/restored via restoreGlobals
+    // below like every other piece of global state this function touches.
+    bool savedCollectAllDiagnostics = DiagnosticEngine::getCollectAllDiagnostics();
+    DiagnosticEngine::setCollectAllDiagnostics(true);
     // Re-created fresh per analyze() call, not just once: struct/enum types
     // are registered into this at PARSE time (ParseStructDecl's
     // `GlobalSymbolTable->RegisterType(...)`, guarded on non-null -- it
@@ -143,6 +239,7 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
         std::memcpy(g_recoverJmp, savedJmpBuf, sizeof(jmp_buf));
         SourceFile = oldFile;
         SourceFilename = oldSourceFilename;
+        DiagnosticEngine::setCollectAllDiagnostics(savedCollectAllDiagnostics);
     };
 
     // Cancellation checkpoint (doc 01 P0.4): coarse-grained, between passes
@@ -187,19 +284,12 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
 
     restoreGlobals();
 
-    // Collect diagnostics for the caller to store (LSPHandler currently
-    // chooses not to publish them to the client -- see publishDiagnostics()
-    // -- but CompilerService itself still surfaces everything it saw).
+    // Collect diagnostics for the caller (doc 03): mapDiagnostic() reads
+    // AllSourceLines for token-widening, which restoreGlobals() above does
+    // NOT clear (it's a persistent cross-pass cache, not per-call state --
+    // see its own doc comment in Lexer.h), so this is safe to do after.
     for (const auto& diag : DiagnosticEngine::getDiagnostics()) {
-        nlohmann::json lspDiag = {
-            {"range", {
-                {"start", {{"line", diag.Loc.Line - 1}, {"character", diag.Loc.Col - 1}}},
-                {"end", {{"line", diag.Loc.Line - 1}, {"character", diag.Loc.Col}}}
-            }},
-            {"severity", diag.IsWarning ? 2 : 1},
-            {"message", diag.Msg}
-        };
-        analysis->diagnostics.push_back(lspDiag);
+        analysis->diagnostics.push_back(mapDiagnostic(diag, std::string(filename)));
     }
 
     return analysis;
