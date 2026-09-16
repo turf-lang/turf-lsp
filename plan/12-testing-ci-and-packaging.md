@@ -84,12 +84,19 @@ enums, methods, extern).
 ## Packaging & release
 
 ### Server binary
-- Version the server (`serverInfo.version`, currently `0.1.0`).
-- Release per-platform `turf-lsp` binaries (GitHub releases). Prefer static
-  linking of LLVM where feasible so the binary runs without a system LLVM
-  (doc 11).
-- A `turf-lsp --version` / `--help` flag (today `main.cpp` has no arg handling)
-  for diagnosability and client version checks.
+- ✅ Done (2026-09-16): `--version`/`-v` and `--help`/`-h` flags, handled
+  before anything else in `main()` (no `Logger::init()`, no stdio-loop
+  entry) so they work even if the compiler-facing parts of the binary are
+  broken. `serverInfo.version` and the CLI flag now share one source of
+  truth -- `include/Version.h.in`, `configure_file`'d from CMake's
+  `project(turf-lsp VERSION ...)` into a generated header -- instead of
+  the version being a literal `"0.1.0"` hardcoded separately in
+  `LSPHandler.cpp` (verified live: a real `initialize` handshake's
+  `serverInfo.version` matches `turf-lsp --version`'s output).
+- ⬜ Release per-platform `turf-lsp` binaries (GitHub releases); static-link
+  LLVM where feasible. Not done -- no CI/release pipeline exists yet in
+  this repo to attach binaries to (doc 11's P5.4 marketplace publishing
+  has the same blocker).
 
 ### Extensions
 - VS Code Marketplace **and** Open VSX (forks/VSCodium) — publish the same VSIX

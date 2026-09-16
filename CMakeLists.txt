@@ -17,6 +17,11 @@ FetchContent_MakeAvailable(json)
 # Setup includes
 include_directories(include)
 
+# Generate Version.h from the project() version above -- single source of
+# truth for both the --version CLI flag and serverInfo.version.
+configure_file(${CMAKE_SOURCE_DIR}/include/Version.h.in ${CMAKE_BINARY_DIR}/generated/Version.h @ONLY)
+include_directories(${CMAKE_BINARY_DIR}/generated)
+
 # Add source files
 set(SOURCES
     src/main.cpp

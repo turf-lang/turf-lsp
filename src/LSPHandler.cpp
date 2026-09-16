@@ -3,6 +3,7 @@
 #include "Logger.hpp"
 #include "Formatter.h"
 #include "Parser.h"
+#include "Version.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -382,7 +383,7 @@ void LSPHandler::handleInitialize(const json& request) {
         }},
         {"serverInfo", {
             {"name", "turf-lsp"},
-            {"version", "0.1.0"}
+            {"version", TURF_LSP_VERSION}
         }}
     };
 
