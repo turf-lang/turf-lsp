@@ -5,23 +5,28 @@
   "version": "0.1.0",
   "publisher": "turflang",
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.80.0"
   },
   "categories": [
     "Programming Languages"
   ],
+  "activationEvents": [
+    "onLanguage:turf"
+  ],
   "main": "./out/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Turf's language server compiles and analyzes source with a native binary; this is not safe to run automatically against untrusted workspaces."
+    }
+  },
   "contributes": {
     "languages": [
       {
         "id": "turf",
-        "aliases": [
-          "Turf",
-          "turf"
-        ],
-        "extensions": [
-          ".turf"
-        ]
+        "aliases": ["Turf", "turf"],
+        "extensions": [".tr"],
+        "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
@@ -31,14 +36,46 @@
         "path": "./syntaxes/turf.tmLanguage.json"
       }
     ],
+    "commands": [
+      {
+        "command": "turf.restartServer",
+        "title": "Turf: Restart Language Server"
+      }
+    ],
     "configuration": {
       "type": "object",
-      "title": "Turf LSP Configuration",
+      "title": "Turf",
       "properties": {
         "turf.server.path": {
           "type": "string",
-          "default": "turf-lsp",
-          "description": "Path to the turf-lsp executable."
+          "default": "",
+          "description": "Path to the turf-lsp executable. If empty, the extension looks for a build next to the open workspace, then falls back to 'turf-lsp' on PATH."
+        },
+        "turf.home": {
+          "type": "string",
+          "default": "",
+          "description": "Value for the TURF_HOME environment variable passed to the server, used to resolve stdlib/installed-package imports. Leave empty to use the server's own default."
+        },
+        "turf.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the Turf language server."
+        },
+        "turf.diagnostics.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable diagnostics (errors/warnings) published by the language server."
+        },
+        "turf.format.onSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run the Turf formatter automatically when saving a .tr file."
+        },
+        "turf.completion.snippets": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include snippet-style (tab-stop) completions, e.g. call argument placeholders."
         }
       }
     }
@@ -49,11 +86,11 @@
     "watch": "tsc -watch -p ./"
   },
   "dependencies": {
-    "vscode-languageclient": "^8.1.0"
+    "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
-    "@types/vscode": "^1.75.0",
-    "@types/node": "^16.11.7",
-    "typescript": "^4.9.5"
+    "@types/node": "18.x",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.1.3"
   }
 }
