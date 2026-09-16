@@ -1,4 +1,5 @@
 build/
 editors/vscode/out/
 editors/vscode/node_modules/
+editors/vscode/*.vsix
 .DS_Store

@@ -5,7 +5,7 @@ Welcome! This guide will help you start contributing to the Turf Language Server
 ## Prerequisites
 
 - **CMake** (v3.15+)
-- **C++ Compiler** (C++17 support required: GCC 9+, Clang 10+, or MSVC)
+- **C++ Compiler** (C++20 support required: GCC 10+, Clang 12+, or MSVC)
 - A basic understanding of the [Language Server Protocol Specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/).
 
 ## Build Instructions
