@@ -103,14 +103,14 @@ Read the existing code before implementing: `src/CompilerService.cpp`,
 | Formatting | ❌ none | No formatter exists anywhere in the codebase. Doc 09 builds one. |
 | Rename / code actions | ❌ none | Doc 10. |
 | Threading | ✅ done (2026-09-15) | I/O thread only frames/parses + does cheap bookkeeping; one worker thread owns all compiler access (`CompilerService::analyze()`, `SemanticQuery::*`, `ResolveModuleFile()` — all touch process-global mutable state per doc 01 §2). A debounce thread coalesces rapid `didChange` bursts into one `publishDiagnostics` per quiet period; on-demand requests don't wait on it — `ensureFreshAnalysis()` self-heals to the latest text version the instant a request actually runs. Doc 01. |
-| Editor clients | ⚠️ scaffolded | Two parallel VS Code extension trees exist (`editors/vscode/` and `vscode-turf/`) — **consolidate** (doc 11). Neovim = `lspconfig` snippet only; needs a native `vim.lsp.config` path too. |
+| Editor clients | ✅ done (2026-09-16) | Consolidated to one VS Code extension (`editors/vscode/`), settings/restart/status-bar/binary-discovery polish, `.tr` watcher fix (doc 11 P5.1/P5.2). Neovim: `ftdetect.lua`, `lspconfig` wrapper, native `vim.lsp.config` path (P5.3). Emacs/Sublime snippets (P5.5). Not done: Marketplace/Open VSX publishing (P5.4, needs external credentials), `nvim-lspconfig` upstream entry. |
 
 ### Two things to fix up front (cheap, high-value)
 - **The stdlib definition path bug** (doc 07): resolve module files through the
   same `IndexModuleDir()`/`TURF_HOME` logic the compiler uses, not a hardcoded
   `lib/std/<name>.tr`.
-- **Duplicate VS Code extension directories**: pick one (`editors/vscode/`),
-  delete/merge the other (`vscode-turf/`) to stop drift.
+- ✅ **Duplicate VS Code extension directories**: fixed (2026-09-16) —
+  `editors/vscode/` is now the one extension, `vscode-turf/` deleted.
 
 ## Phased roadmap
 
@@ -232,9 +232,32 @@ everything; do it first.
   never reaches `publishDiagnostics` today, confirmed live against the
   real `turf` CLI on identical source.
 
-### Phase 5 — Polish & ship (doc 11, 12)
-- Consolidated VS Code extension published to Marketplace + Open VSX (forks);
-  Neovim client + `nvim-lspconfig` upstream entry; test suite + CI.
+### Phase 5 — Polish & ship (doc 11, 12) — ✅ core done (2026-09-16)
+- ✅ VS Code extensions consolidated into `editors/vscode/` (deleted
+  `vscode-turf/`); `.tr` watcher/extension bug fixed; settings
+  (`turf.home`, `turf.trace.server`, `turf.diagnostics.enable`,
+  `turf.format.onSave`, `turf.completion.snippets`), restart command,
+  status bar, workspace-relative binary discovery all shipped (P5.1/P5.2).
+- ✅ Neovim: `ftdetect.lua` (the filetype was never registered before —
+  the server could never actually attach), an `lspconfig` wrapper with
+  overridable `cmd`/`turf_home`/`on_attach`/`capabilities`, and a native
+  Neovim 0.11+ `vim.lsp.config` path (P5.3).
+- ✅ Emacs (`eglot`/`lsp-mode`) and Sublime (`LSP`) client-registration
+  snippets, both explicit about the syntax-highlighting gap they don't
+  close (P5.5).
+- ✅ `turf-lsp --version`/`--help`; `serverInfo.version` and the CLI flag
+  now share one CMake-generated source of truth instead of a duplicated
+  literal (doc 12).
+- ⬜ Not done, deliberately: publishing to the VS Code Marketplace + Open
+  VSX, per-platform release binaries, `nvim-lspconfig` upstream PR — all
+  need either external credentials/accounts or a CI/release pipeline
+  that doesn't exist yet in this repo; none of these are safe or possible
+  to do autonomously (P5.4).
+- ⬜ Not done: the layered automated test suite doc 12 specs (SemanticQuery
+  unit tests, protocol/integration tests, editor smoke tests, perf/soak).
+  This session's verification was all manual/live (JSON-RPC scripts
+  against the real binary, `tsc`/`luac` syntax checks) — real, but not a
+  standing regression suite someone can run in CI.
 
 ## Milestone table
 
@@ -245,7 +268,7 @@ everything; do it first.
 | M2 | Completion (incl. imports) + hover + go-to-def working end-to-end | ✅ done (2026-09-16) |
 | M3 | Find references + document highlight | ✅ core done (2026-09-16) — incremental indexing/`workspace/symbol` still open |
 | M4 | Format-on-save + rename + quick-fixes | ✅ format + rename + 2 quick-fixes done (2026-09-16) — full quick-fix table/refactors not started |
-| M5 | Published extensions, Neovim client, green CI | all |
+| M5 | Published extensions, Neovim client, green CI | ✅ extensions/clients done (2026-09-16); publishing + CI still open (need external accounts/pipeline, see Phase 5) |
 
 ## A note on the turf-lang side
 
