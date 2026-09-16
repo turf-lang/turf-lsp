@@ -6,20 +6,18 @@ VSCodium) and **Neovim**, plus documented config for other LSP editors. The
 server is editor-agnostic; these are thin.
 
 ## Current state (consolidate first)
-There are **three** overlapping trees — clean this up before adding features:
-- `turf-lsp/editors/vscode/` — extension with `package.json`, `extension.ts`,
-  `syntaxes/turf.tmLanguage.json`. Client points at a `turf-lsp` binary via the
-  `turf.server.path` setting.
-- `turf-lsp/vscode-turf/` — a **second**, near-duplicate VS Code extension
-  (`out/`, `syntaxes/`, `language-configuration.json`, its own `extension.ts`).
-- `turf-lang/grammars/` — unrelated (`slm_suggestion.gbnf`), plus the tmLanguage
-  duplicated across the two extension dirs.
-
-**Action:** pick `editors/vscode/` as the canonical extension; migrate anything
-unique from `vscode-turf/` (notably `language-configuration.json` — brackets,
-comments, auto-closing pairs) into it; **delete `vscode-turf/`**. Keep exactly
-one `turf.tmLanguage.json` (shared source of truth, referenced by the extension;
-doc 04).
+✅ Done (2026-09-16): there used to be two overlapping VS Code extension
+trees (`editors/vscode/` and a near-duplicate `vscode-turf/`).
+`vscode-turf/` is deleted (kept in git history); `editors/vscode/` is now
+the single canonical extension, carrying forward everything that was
+unique to `vscode-turf/` (its richer `turf.tmLanguage.json`, its
+`language-configuration.json`, its workspace-relative binary discovery)
+minus one bug: `vscode-turf`'s grammar/language-configuration both
+claimed `/* */` block comments exist, but the lexer only implements `//`
+line comments (confirmed in `Lexer.cpp`) — dropped that pattern rather
+than carrying forward a highlighting bug. `turf-lang/grammars/` was
+confirmed unrelated (`slm_suggestion.gbnf`, a different grammar format
+for a different purpose) and left alone.
 
 ## VS Code extension (`editors/vscode/`)
 
@@ -65,18 +63,30 @@ coloring in a light and a dark theme.
 ## Neovim client
 
 ### Two supported paths
-1. **`nvim-lspconfig`** (most users). The existing `editors/neovim/turf-lsp.lua`
-   registers `turf_lsp` with `cmd = { 'turf-lsp' }`, `filetypes = { 'turf' }`.
-   Improve:
-   - `root_dir`: detect project root by a marker (`.git`, or a Turf project file
-     if one exists) — the current `find_git_ancestor` is fine as a default.
-   - Register the `turf` filetype for `*.tr` (an `ftdetect`/autocmd:
-     `vim.filetype.add({ extension = { tr = 'turf' } })`).
-   - Pass `init_options` (turf.home) and `settings`.
-   - Upstream a `turf_ls` entry to `nvim-lspconfig` so users get it built-in.
-2. **Native `vim.lsp.config`/`vim.lsp.enable`** (Neovim 0.11+), no plugin:
-   provide a copy-paste snippet using the built-in API for users who avoid
-   lspconfig.
+✅ Done (2026-09-16), both paths:
+1. **`nvim-lspconfig`**: `editors/neovim/turf-lsp.lua` now exposes a
+   `require('turf-lsp').setup(opts)` wrapping the `turf_lsp` registration,
+   with `opts.cmd` (binary override), `opts.turf_home` (threaded through as
+   `cmd_env = { TURF_HOME = ... }` — the compiler env var, not an LSP
+   `initializationOption`; the server doesn't read those today, same
+   reasoning as doc 11's VS Code `turf.home` setting), `on_attach`,
+   `capabilities`. `root_dir` keeps `find_git_ancestor`, per the original
+   plan note that it's fine as a default.
+2. **Native `vim.lsp.config`/`vim.lsp.enable`** (Neovim 0.11+):
+   `editors/neovim/native.lua`, a drop-in `lsp/turf_lsp.lua` config table.
+3. **`editors/neovim/ftdetect.lua`** (new, shared by both paths): registers
+   the `turf` filetype for `.tr` — previously missing entirely, so neither
+   path could ever actually attach to a `.tr` buffer (`filetypes = {
+   'turf' }` had nothing to match against). The README's own setup
+   instructions also said "Open a `.turf` file" — same bug as the VS Code
+   extension's watcher, fixed here too.
+- Position encoding: not changed — confirmed by reading the server's
+  `negotiatePositionEncoding`/`positionEncodings` handling (doc 01 §6, `src/LSPHandler.cpp`)
+  that this is already spec-negotiated automatically; documented in the
+  README rather than adding a no-op client-side override.
+- Upstreaming a `turf_ls` entry to `nvim-lspconfig` itself: **not done** —
+  an external PR against a repo this session doesn't own, documented as a
+  follow-up in the README rather than attempted.
 
 ### Neovim feature wiring
 - Diagnostics: `vim.diagnostic` renders `publishDiagnostics` out of the box
@@ -108,21 +118,52 @@ Provide these as README snippets; they come free from spec compliance.
   requirements (parallels `turf-lang/AGENTS.md`).
 
 ## Phased tasks
-- **P0/P5.1** Delete `vscode-turf/`; consolidate into `editors/vscode/`; fix the
-  `**/*.turf` → `**/*.tr` watcher; add `language-configuration.json`.
-- **P5.2** Extension settings (home, toggles, trace), restart command, status
-  bar, output channel, binary discovery/bundling.
-- **P5.3** Neovim: ftdetect for `.tr`, lspconfig improvements, native
-  `vim.lsp.config` snippet, format-on-save doc.
-- **P5.4** Publish to Marketplace + Open VSX; verify in VS Code + VSCodium +
-  one fork (Cursor/Windsurf).
-- **P5.5** Emacs/Sublime README snippets.
+- ✅ **P0/P5.1** Done (2026-09-16): deleted `vscode-turf/`; consolidated into
+  `editors/vscode/`; fixed the `**/*.turf` → `**/*.tr` watcher; added
+  `language-configuration.json`.
+- ✅ **P5.2** Done (2026-09-16): extension settings (`turf.home`,
+  `turf.trace.server`, `turf.diagnostics.enable`, `turf.format.onSave`,
+  `turf.completion.snippets`), restart command, status bar item, binary
+  discovery (workspace-relative candidates → dev-mode fallback → PATH).
+  Bundling a prebuilt binary in the VSIX is **not done** — no release
+  pipeline producing per-platform binaries exists yet (doc 12); output
+  channel needed no extra code (`vscode-languageclient` already pipes
+  child-process stderr into the client's default output channel).
+- ✅ **P5.3** Done (2026-09-16): Neovim `ftdetect.lua` for `.tr`,
+  `turf-lsp.lua` lspconfig wrapper (`cmd`/`turf_home`/`on_attach`/
+  `capabilities` opts), `native.lua` for the 0.11+ `vim.lsp.config` path,
+  format-on-save documented as a README snippet (not auto-installed —
+  editor-agnostic clients shouldn't silently add autocmds to someone's
+  config). Upstreaming to `nvim-lspconfig` itself not done (external PR,
+  documented as a follow-up).
+- ⬜ **P5.4** Not done, deliberately: publish to Marketplace + Open VSX;
+  verify in VS Code + VSCodium + one fork. Needs external publisher
+  credentials/accounts — an action requiring explicit user authorization,
+  not something to do autonomously.
+- ✅ **P5.5** Done (2026-09-16): `editors/emacs/README.md` (eglot +
+  lsp-mode snippets) and `editors/sublime/README.md` (LSP package
+  settings snippet). Both are honest about what's *not* included: neither
+  ships syntax highlighting (no font-lock rules for Emacs, no
+  `.sublime-syntax` for Sublime — porting `turf.tmLanguage.json` to either
+  is unstarted); LSP features (diagnostics/hover/completion/go-to-def)
+  work via the snippets as given.
 
 ## Acceptance tests
-- Fresh VS Code with the VSIX: open a `.tr` file → server starts, diagnostics +
-  highlighting + hover + completion + go-to-def all work; format-on-save works.
-- Same VSIX loads and works in VSCodium (Open VSX path).
-- Neovim 0.10+ with the lspconfig snippet: `.tr` file gets the `turf` filetype,
-  server attaches, all features work; `utf-8` encoding negotiated.
-- Changing `turf.server.path` / `turf.home` and reloading picks up the new
-  values.
+- ⬜ Fresh VS Code with the VSIX: open a `.tr` file → server starts,
+  diagnostics + highlighting + hover + completion + go-to-def all work;
+  format-on-save works. **Not run** — no GUI VS Code available in this
+  environment; verified instead via `tsc -p ./` compiling clean and
+  manual code review of the capability/handler wiring against the
+  already-live-tested server (docs 03-10).
+- ⬜ Same VSIX loads and works in VSCodium (Open VSX path). Not run, same
+  reason; no VSIX has been packaged at all yet (doc 12 P5.4 territory).
+- ⬜ Neovim 0.10+ with the lspconfig snippet: `.tr` file gets the `turf`
+  filetype, server attaches, all features work; `utf-8` encoding
+  negotiated. **Not run** — no Neovim available in this environment;
+  verified instead via `luac -p` syntax-checking all three `.lua` files
+  and reading the server's own position-encoding negotiation code (doc
+  01 §6, confirmed already spec-compliant, nothing Neovim-specific to add).
+- ⬜ Changing `turf.server.path` / `turf.home` and reloading picks up the
+  new values. VS Code side wires a `workspace/onDidChangeConfiguration`
+  restart for exactly these two settings; not run live (same GUI
+  limitation as above).
