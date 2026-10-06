@@ -305,6 +305,8 @@ void LSPHandler::dispatch(const json& msg) {
     if (method == "completionItem/resolve") { handleCompletionResolve(msg); return; }
     if (method == "textDocument/hover") { handleHover(msg); return; }
     if (method == "textDocument/signatureHelp") { handleSignatureHelp(msg); return; }
+    if (method == "textDocument/inlayHint") { handleInlayHint(msg); return; }
+    if (method == "workspace/symbol") { handleWorkspaceSymbol(msg); return; }
     if (method == "textDocument/definition") { handleDefinition(msg); return; }
     if (method == "textDocument/declaration") { handleDeclaration(msg); return; }
     if (method == "textDocument/typeDefinition") { handleTypeDefinition(msg); return; }
@@ -378,6 +380,8 @@ void LSPHandler::handleInitialize(const json& request) {
             }},
             {"hoverProvider", true},
             {"signatureHelpProvider", {{"triggerCharacters", {"(", ","}}, {"retriggerCharacters", {","}}}},
+            {"inlayHintProvider", true},
+            {"workspaceSymbolProvider", true},
             {"definitionProvider", true},
             {"declarationProvider", true},
             {"typeDefinitionProvider", true},
@@ -616,6 +620,26 @@ void LSPHandler::handleSignatureHelp(const json& request) {
 
     auto cancelFlag = registerCancellable(id);
     enqueueWork([this, id, uri, pos, cancelFlag]() { doSignatureHelp(id, uri, pos, cancelFlag); });
+}
+
+void LSPHandler::handleInlayHint(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    auto range = params.value("range", json::object());
+    LspRange r;
+    r.start = {range.value("start", json::object()).value("line", 0), range.value("start", json::object()).value("character", 0)};
+    r.end = {range.value("end", json::object()).value("line", 0), range.value("end", json::object()).value("character", 0)};
+
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, r, cancelFlag]() { doInlayHint(id, uri, r, cancelFlag); });
+}
+
+void LSPHandler::handleWorkspaceSymbol(const json& request) {
+    json id = request.value("id", json(nullptr));
+    std::string query = request.value("params", json::object()).value("query", "");
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, query, cancelFlag]() { doWorkspaceSymbol(id, query, cancelFlag); });
 }
 
 void LSPHandler::handleDefinition(const json& request) {
@@ -1022,6 +1046,121 @@ void LSPHandler::doSignatureHelp(json id, std::string uri, LspPosition pos, std:
     sendResponse(id, {{"signatures", signatures},
                       {"activeSignature", help->activeSignature},
                       {"activeParameter", help->activeParameter}});
+}
+
+// textDocument/inlayHint: the parameter name before each argument of a call
+// (`add(a: 1, b: 2)`), so an unfamiliar function's call reads without going to
+// its definition. Needs the analysis (to know what is being called).
+void LSPHandler::doInlayHint(json id, std::string uri, LspRange range, std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!m_documents.contains(uri)) { sendError(id, -32801, "Content modified"); return; }
+
+    auto analysis = ensureFreshAnalysis(uri, cancelled);
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!analysis) { sendResponse(id, json::array()); return; }
+
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) { sendError(id, -32801, "Content modified"); return; }
+
+    PositionMapper mapper(textSnap->text, m_positionEncoding);
+    json hints = json::array();
+    for (const auto& hint : SemanticQuery::getInlayHints(*analysis, textSnap->text, mapper.toByteOffset(range.start),
+                                                         mapper.toByteOffset(range.end))) {
+        LspPosition at = mapper.toLspPosition(hint.byteOffset);
+        hints.push_back({{"position", {{"line", at.line}, {"character", at.character}}},
+                         {"label", hint.label},
+                         {"kind", 2}, // Parameter
+                         {"paddingRight", true}});
+    }
+    sendResponse(id, hints);
+}
+
+// workspace/symbol (Ctrl+T): declarations across the workspace matching the
+// query, from the text of each file -- the open ones as the editor has them,
+// the rest from disk (cached by modification time). No analysis, so it covers
+// files nobody has opened, and files that do not parse.
+void LSPHandler::doWorkspaceSymbol(json id, std::string query, std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+
+    std::string q = query;
+    std::transform(q.begin(), q.end(), q.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    // 0 prefix, 1 contains, 2 the query's letters in order, -1 no match.
+    auto score = [&](const std::string& name) {
+        if (q.empty()) return 0;
+        std::string n = name;
+        std::transform(n.begin(), n.end(), n.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (n.rfind(q, 0) == 0) return 0;
+        if (n.find(q) != std::string::npos) return 1;
+        size_t at = 0;
+        for (char c : q) { at = n.find(c, at); if (at == std::string::npos) return -1; ++at; }
+        return 2;
+    };
+
+    struct Hit { int score; std::string uri; turf_lsp::Declaration decl; };
+    std::vector<Hit> hits;
+    std::set<std::string> seen;
+    auto consider = [&](const std::string& path, const std::string& uri, const std::vector<turf_lsp::Declaration>& decls) {
+        for (const auto& d : decls) {
+            int s = score(d.name);
+            if (s >= 0) hits.push_back({s, uri, d});
+        }
+    };
+
+    // Open documents first, from the editor's text.
+    for (const auto& uri : m_documents.openUris()) {
+        if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+        auto snap = m_documents.getText(uri);
+        if (!snap) continue;
+        seen.insert(uriToPath(uri));
+        consider(uriToPath(uri), uri, turf_lsp::declarations(snap->text));
+    }
+    for (const auto& path : m_workspaceIndex.files()) {
+        if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+        if (seen.count(path)) continue;
+        std::error_code ec;
+        long long modified = std::filesystem::last_write_time(path, ec).time_since_epoch().count();
+        if (ec) continue;
+        auto& cached = m_declarationCache[path];
+        if (cached.modified != modified) {
+            std::ifstream in(path, std::ios::binary);
+            std::stringstream text;
+            text << in.rdbuf();
+            cached.declarations = turf_lsp::declarations(text.str());
+            cached.modified = modified;
+        }
+        consider(path, pathToUri(path), cached.declarations);
+    }
+
+    std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) {
+        if (a.score != b.score) return a.score < b.score;
+        return a.decl.name != b.decl.name ? a.decl.name < b.decl.name : a.uri < b.uri;
+    });
+    if (hits.size() > 200) hits.resize(200);
+
+    json symbols = json::array();
+    for (const auto& h : hits) {
+        int kind = 12; // Function
+        switch (h.decl.kind) {
+        case turf_lsp::DeclKind::Method: kind = 6; break;
+        case turf_lsp::DeclKind::Struct: kind = 23; break;
+        case turf_lsp::DeclKind::Enum: kind = 10; break;
+        case turf_lsp::DeclKind::Constant: kind = 14; break;
+        case turf_lsp::DeclKind::Function: break;
+        }
+        json range = {{"start", {{"line", h.decl.line}, {"character", h.decl.column}}},
+                      {"end", {{"line", h.decl.line}, {"character", h.decl.column + static_cast<int>(h.decl.name.size())}}}};
+        json symbol = {{"name", h.decl.name}, {"kind", kind}, {"location", {{"uri", h.uri}, {"range", range}}}};
+        if (!h.decl.container.empty()) symbol["containerName"] = h.decl.container;
+        symbols.push_back(std::move(symbol));
+    }
+    sendResponse(id, symbols);
 }
 
 void LSPHandler::doHover(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag) {

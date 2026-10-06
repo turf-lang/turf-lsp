@@ -554,6 +554,60 @@ def t_signature_help(c, d):
     check(signature_at(c, d, "sig5.tr", SIGNATURE_SRC, "return r;", 3) is None, "signature help outside a call")
 
 
+def t_inlay_hints(c, d):
+    """The parameter name before each argument, but not where the argument is
+    already that name, and not for a call that resolves to nothing."""
+    check(c.init["capabilities"].get("inlayHintProvider"), "inlayHintProvider is not advertised")
+    text = SIGNATURE_SRC.replace("return r;", "mut a: int = 1;\n    mut b: int = 2;\n    r = add(a, b);\n    r = nosuch(7);\n    return r;")
+    doc = Doc(c, d / "hints.tr", text)
+    doc.diagnostics()
+    hints = c.result("textDocument/inlayHint", {
+        "textDocument": doc.td(), "range": {"start": {"line": 0, "character": 0}, "end": {"line": 40, "character": 0}}})
+    lines = text.split("\n")
+    have = sorted((h["position"]["line"], h["position"]["character"], h["label"]) for h in hints)
+    def line_of(s):
+        return next(i for i, l in enumerate(lines) if s in l)
+    add_line = line_of("mut r: int = add(1, 2);")
+    col = lines[add_line].index("add(1, 2)")
+    check((add_line, col + 4, "a:") in have and (add_line, col + 7, "b:") in have,
+          "no 'a:' / 'b:' before add's arguments; got %r" % [h for h in have if h[0] == add_line])
+    method_line = line_of("p.scaled(2, 3)")
+    check(any(h[0] == method_line and h[2] == "factor:" for h in have) and any(h[0] == method_line and h[2] == "offset:" for h in have),
+          "no hints for the method call's parameters (self must be skipped): %r" % [h for h in have if h[0] == method_line])
+    same_line = line_of("r = add(a, b);")
+    check(not [h for h in have if h[0] == same_line], "a hint was added where the argument is already the parameter's name: %r" % have)
+    nosuch_line = line_of("nosuch(7)")
+    check(not [h for h in have if h[0] == nosuch_line], "a hint was added for a call that resolves to nothing")
+    # A range excludes calls outside it.
+    narrow = c.result("textDocument/inlayHint", {
+        "textDocument": doc.td(), "range": {"start": {"line": method_line, "character": 0}, "end": {"line": method_line + 1, "character": 0}}})
+    check(all(h["position"]["line"] == method_line for h in narrow) and narrow, "the range was not respected: %r" % narrow)
+
+
+def t_workspace_symbols(c, d):
+    """Ctrl+T: declarations across the workspace, in files nobody has open too."""
+    check(c.init["capabilities"].get("workspaceSymbolProvider"), "workspaceSymbolProvider is not advertised")
+    # c's workspace root is the shared scratch directory `d`; a file on disk, never opened:
+    put(d / "wsfile_unopened.tr", "pub struct Zebra {\n    stripes: int,\n}\n\nfn Zebra.gallop(): int {\n    return 1;\n}\n\nfn zebra_count(): int {\n    return 2;\n}\n")
+    # And one that is open, with unsaved text.
+    Doc(c, d / "wsfile_open.tr", "fn zebra_open_only(): int {\n    return 3;\n}\n", save=False)
+    # The index is of files at `initialize`; tell the server a file appeared.
+    c.notify("workspace/didChangeWatchedFiles", {"changes": [{"uri": uri_of(d / "wsfile_unopened.tr"), "type": 1}]})
+    time.sleep(0.5)
+    syms = c.result("workspace/symbol", {"query": "zebra"})
+    names = {s["name"]: s for s in syms}
+    for want in ("Zebra", "zebra_count", "zebra_open_only"):
+        check(want in names, "workspace symbol %r missing; got %r" % (want, sorted(names)))
+    check(names["Zebra"]["kind"] == 23 and names["zebra_count"]["kind"] == 12, "symbol kinds: %r" % names["Zebra"])
+    check(names["zebra_open_only"]["location"]["uri"].endswith("wsfile_open.tr"), "the open file's symbol is not found at its own uri")
+    # A method carries its struct, and a fuzzy query still finds it.
+    gallop = [s for s in c.result("workspace/symbol", {"query": "glp"}) if s["name"] == "gallop"]
+    check(gallop and gallop[0].get("containerName") == "Zebra", "fuzzy search for the method: %r" % gallop)
+    # The best match first: a prefix beats a mere subsequence.
+    ordered = [s["name"] for s in c.result("workspace/symbol", {"query": "zebra_c"})]
+    check(ordered[:1] == ["zebra_count"], "prefix match is not first: %r" % ordered)
+
+
 def t_document_symbols(c, d):
     doc = Doc(c, d / "sym.tr", FEATURES)
     doc.diagnostics()

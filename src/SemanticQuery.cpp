@@ -1324,36 +1324,60 @@ std::vector<const ResolverFunctionSymbol*> overloadsOf(const ResolverSymbolTable
 
 } // namespace
 
+namespace {
+
+struct ResolvedCallee {
+    std::vector<const ResolverFunctionSymbol*> overloads;
+    bool dropSelf = false; // `value.method(...)`: `self` is the receiver, not an argument
+};
+
+// What a callee written as `add`, `io::printline`, `Point::new` or `p.scaled`
+// refers to, against an analysis. `variableTypes` is the document's variables'
+// types, built once by the caller when it resolves many callees.
+ResolvedCallee resolveCallee(const DocumentAnalysis& analysis, const std::string& callee,
+                             const std::map<std::string, TurfTypePtr>& variableTypes) {
+    const ResolverSymbolTable& symTable = analysis.symbols();
+    ResolvedCallee out;
+    if (auto sep = callee.rfind("::"); sep != std::string::npos) {
+        const std::string base = callee.substr(0, sep), name = callee.substr(sep + 2);
+        if (symTable.hasModule(base)) {
+            out.overloads = overloadsOf(symTable, name, base);
+        } else if (symTable.isKnownStruct(base)) {
+            out.overloads = overloadsOf(symTable, base + "." + name, symTable.getTypeOwningModule(base));
+        }
+    } else if (auto dot = callee.rfind('.'); dot != std::string::npos) {
+        const std::string receiver = callee.substr(0, dot), name = callee.substr(dot + 1);
+        if (auto it = variableTypes.find(receiver); it != variableTypes.end() && it->second) {
+            const std::string structName = it->second->getName();
+            out.overloads = overloadsOf(symTable, structName + "." + name, symTable.getTypeOwningModule(structName));
+            out.dropSelf = true;
+        }
+    } else {
+        out.overloads = overloadsOf(symTable, callee, "");
+    }
+    return out;
+}
+
+std::map<std::string, TurfTypePtr> variableTypesOf(const DocumentAnalysis& analysis) {
+    DocumentIndexVisitor indexer;
+    for (const auto& ast : analysis.asts())
+        if (ast) const_cast<ExprAST*>(ast.get())->accept(indexer);
+    std::map<std::string, TurfTypePtr> out;
+    for (const auto& entry : indexer.VariableTypes) out[entry.first] = entry.second;
+    return out;
+}
+
+} // namespace
+
 std::optional<SemanticQuery::SignatureHelp> SemanticQuery::getSignatureHelp(const DocumentAnalysis& analysis,
                                                                            const std::string& text,
                                                                            size_t byteOffset) {
     auto site = findCallSite(text, byteOffset);
     if (!site) return std::nullopt;
 
-    const ResolverSymbolTable& symTable = analysis.symbols();
-    std::vector<const ResolverFunctionSymbol*> overloads;
-    bool dropSelf = false;
-
-    if (auto sep = site->callee.rfind("::"); sep != std::string::npos) {
-        const std::string base = site->callee.substr(0, sep), name = site->callee.substr(sep + 2);
-        if (symTable.hasModule(base)) {
-            overloads = overloadsOf(symTable, name, base);
-        } else if (symTable.isKnownStruct(base)) {
-            overloads = overloadsOf(symTable, base + "." + name, symTable.getTypeOwningModule(base));
-        }
-    } else if (auto dot = site->callee.rfind('.'); dot != std::string::npos) {
-        const std::string receiver = site->callee.substr(0, dot), name = site->callee.substr(dot + 1);
-        DocumentIndexVisitor indexer;
-        for (const auto& ast : analysis.asts())
-            if (ast) const_cast<ExprAST*>(ast.get())->accept(indexer);
-        if (auto it = indexer.VariableTypes.find(receiver); it != indexer.VariableTypes.end() && it->second) {
-            const std::string structName = it->second->getName();
-            overloads = overloadsOf(symTable, structName + "." + name, symTable.getTypeOwningModule(structName));
-            dropSelf = true;
-        }
-    } else {
-        overloads = overloadsOf(symTable, site->callee, "");
-    }
+    ResolvedCallee callee = resolveCallee(analysis, site->callee, variableTypesOf(analysis));
+    const auto& overloads = callee.overloads;
+    const bool dropSelf = callee.dropSelf;
     if (overloads.empty()) return std::nullopt;
 
     SignatureHelp help;
@@ -1367,6 +1391,103 @@ std::optional<SemanticQuery::SignatureHelp> SemanticQuery::getSignatureHelp(cons
         }
     }
     return help;
+}
+
+std::vector<SemanticQuery::InlayHintInfo> SemanticQuery::getInlayHints(const DocumentAnalysis& analysis,
+                                                                       const std::string& text,
+                                                                       size_t startByte, size_t endByte) {
+    std::vector<InlayHintInfo> hints;
+    static const std::set<std::string> reserved = [] {
+        std::set<std::string> s;
+        for (const auto& kw : turf::keywords()) s.insert(kw.Name);
+        return s;
+    }();
+    const auto variableTypes = variableTypesOf(analysis);
+    const size_t limit = std::min(endByte, text.size());
+
+    auto previousWord = [&](size_t at) { // the word before `at`, skipping blanks
+        while (at > 0 && (text[at - 1] == ' ' || text[at - 1] == '\t')) --at;
+        size_t from = at;
+        while (from > 0 && isIdentChar(text[from - 1])) --from;
+        return text.substr(from, at - from);
+    };
+
+    for (size_t i = 0; i < limit; ++i) {
+        const char ch = text[i];
+        if (ch == '/' && i + 1 < text.size() && text[i + 1] == '/') {
+            while (i < limit && text[i] != '\n') ++i;
+            continue;
+        }
+        if (ch == '"' || ch == '\'') {
+            ++i;
+            while (i < text.size() && text[i] != ch && text[i] != '\n') { if (text[i] == '\\') ++i; ++i; }
+            continue;
+        }
+        if (ch != '(') continue;
+
+        size_t stop = i;
+        while (stop > 0 && text[stop - 1] == ' ') --stop;
+        size_t start = stop;
+        while (start > 0 && (isIdentChar(text[start - 1]) || text[start - 1] == ':' || text[start - 1] == '.')) --start;
+        if (start == stop) continue; // `(a + b)`: grouping
+        const std::string callee = text.substr(start, stop - start);
+        if (callee.find("::") == std::string::npos && callee.find('.') == std::string::npos && reserved.count(callee))
+            continue; // `if (`, `while (`, a cast
+        if (previousWord(start) == "fn") continue; // a declaration, not a call
+
+        // The arguments: where each starts and ends, at this call's own level.
+        std::vector<std::pair<size_t, size_t>> args;
+        {
+            int depth = 0;
+            size_t argStart = std::string::npos;
+            size_t j = i + 1;
+            for (; j < text.size(); ++j) {
+                const char c = text[j];
+                if (c == '"' || c == '\'') {
+                    if (argStart == std::string::npos) argStart = j;
+                    ++j;
+                    while (j < text.size() && text[j] != c && text[j] != '\n') { if (text[j] == '\\') ++j; ++j; }
+                    continue;
+                }
+                if (c == '(' || c == '[' || c == '{') { if (argStart == std::string::npos) argStart = j; ++depth; continue; }
+                if (c == ')' || c == ']' || c == '}') {
+                    if (depth == 0) break; // this call's closing parenthesis
+                    --depth;
+                    continue;
+                }
+                if (c == ',' && depth == 0) {
+                    if (argStart != std::string::npos) args.emplace_back(argStart, j);
+                    argStart = std::string::npos;
+                    continue;
+                }
+                if (c == ';') { j = text.size(); break; } // a statement ended inside the parentheses: the call was never closed
+                if (argStart == std::string::npos && c != ' ' && c != '\t' && c != '\n' && c != '\r') argStart = j;
+            }
+            if (j >= text.size()) continue; // an unclosed call: nothing reliable to say
+            if (argStart != std::string::npos) args.emplace_back(argStart, j);
+        }
+        if (args.empty()) continue;
+
+        const ResolvedCallee resolved = resolveCallee(analysis, callee, variableTypes);
+        for (const auto* sym : resolved.overloads) {
+            if (!sym || sym->IsVarArg) continue;
+            std::vector<std::string> names;
+            for (size_t p = 0; p < sym->Params.size(); ++p) {
+                if (resolved.dropSelf && p == 0 && sym->Params[p].Name == "self") continue;
+                names.push_back(sym->Params[p].Name);
+            }
+            if (names.size() != args.size()) continue;
+            for (size_t k = 0; k < args.size(); ++k) {
+                if (names[k].empty() || args[k].first < startByte) continue;
+                size_t e = args[k].second;
+                while (e > args[k].first && (text[e - 1] == ' ' || text[e - 1] == '\t' || text[e - 1] == '\n' || text[e - 1] == '\r')) --e;
+                if (text.compare(args[k].first, e - args[k].first, names[k]) == 0) continue; // `x` for parameter `x`
+                hints.push_back({args[k].first, names[k] + ":"});
+            }
+            break; // the first overload that fits
+        }
+    }
+    return hints;
 }
 
 SemanticQuery::ImportInsertion SemanticQuery::importInsertion(const std::string& text, const std::string& module) {

@@ -176,6 +176,75 @@ std::vector<ImportStatement> importStatements(const std::string& text) {
     return out;
 }
 
+std::vector<Declaration> declarations(const std::string& text) {
+    std::vector<Declaration> out;
+    const std::vector<std::string> lines = linesWithEol(text);
+
+    // The next word of `line` from `pos` (skipping blanks), advancing `pos`.
+    auto word = [](const std::string& line, size_t& pos) {
+        while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
+        const size_t start = pos;
+        while (pos < line.size() && isIdentChar(line[pos])) ++pos;
+        return line.substr(start, pos - start);
+    };
+
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const std::string& line = lines[i];
+        if (line.empty() || line[0] == ' ' || line[0] == '\t' || line[0] == '\n' || line[0] == '\r' || line[0] == '/')
+            continue; // a declaration starts its line; a nested one is not top-level
+
+        size_t pos = 0;
+        std::string first = word(line, pos);
+        // `@caller_location fn ...`: skip an annotation.
+        if (first.empty() && line[0] == '@') { ++pos; word(line, pos); first = word(line, pos); }
+        while (first == "pub" || first == "public" || first == "export" || first == "static" || first == "extern")
+            first = word(line, pos);
+
+        Declaration d;
+        d.line = static_cast<int>(i);
+        if (first == "fn") {
+            while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
+            size_t nameStart = pos;
+            std::string name = word(line, pos);
+            if (name.empty()) continue;
+            if (pos < line.size() && line[pos] == '.') { // fn Type.method(
+                ++pos;
+                const size_t methodStart = pos;
+                std::string method = word(line, pos);
+                if (method.empty()) continue;
+                d.kind = DeclKind::Method;
+                d.container = name;
+                d.name = method;
+                d.column = static_cast<int>(methodStart);
+            } else {
+                d.kind = DeclKind::Function;
+                d.name = name;
+                d.column = static_cast<int>(nameStart);
+            }
+        } else if (first == "struct" || first == "enum") {
+            while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
+            const size_t nameStart = pos;
+            std::string name = word(line, pos);
+            if (name.empty()) continue;
+            d.kind = first == "struct" ? DeclKind::Struct : DeclKind::Enum;
+            d.name = name;
+            d.column = static_cast<int>(nameStart);
+        } else if (first == "immut" || first == "immutable") {
+            while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
+            const size_t nameStart = pos;
+            std::string name = word(line, pos);
+            if (name.empty()) continue;
+            d.kind = DeclKind::Constant;
+            d.name = name;
+            d.column = static_cast<int>(nameStart);
+        } else {
+            continue;
+        }
+        out.push_back(std::move(d));
+    }
+    return out;
+}
+
 std::optional<TextChange> organizeImports(const std::string& text) {
     const std::vector<std::string> lines = linesWithEol(text);
     size_t first = 0;

@@ -48,6 +48,23 @@ struct ImportStatement {
 // starts a line). For document links: each module name can open its file.
 std::vector<ImportStatement> importStatements(const std::string& text);
 
+enum class DeclKind { Function, Method, Struct, Enum, Constant };
+
+struct Declaration {
+    std::string name;       // `add`, `Point`, `new` (a method's own name)
+    std::string container;  // the struct a method belongs to; empty otherwise
+    DeclKind kind = DeclKind::Function;
+    int line = 0;           // 0-based, where the name is
+    int column = 0;         // byte column of the name
+};
+
+// The top-level declarations of a file -- functions, methods (`fn Type.name`),
+// structs, enums and `immut` constants -- found from the text alone: a
+// declaration starts its line, after any `pub`/`export`/`static`/`extern`. It
+// needs no parse, so it works on files that do not parse, and workspace-wide
+// symbol search can cover files nobody has analysed.
+std::vector<Declaration> declarations(const std::string& text);
+
 // The edit that sorts and de-duplicates the file's first contiguous block of
 // `import` lines; nullopt when there is none or it is already in order.
 std::optional<TextChange> organizeImports(const std::string& text);

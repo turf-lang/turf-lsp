@@ -173,6 +173,45 @@ static void testImports() {
     CHECK_EQ(applyChanges("import b;\nimport a;", {*organizeImports("import b;\nimport a;")}), std::string("import a;\nimport b;"));
 }
 
+static void testDeclarations() {
+    g_test = "declarations";
+    using namespace turf_lsp;
+    const std::string src =
+        "// header\n"
+        "import io;\n"
+        "\n"
+        "pub struct Point {\n"
+        "    x: int,\n"
+        "    fn not_a_decl(): int {}\n"   // indented: not top-level
+        "}\n"
+        "enum Color { Red, Green }\n"
+        "export immut LIMIT: int = 10;\n"
+        "extern fn malloc(n: int): int*;\n"
+        "@caller_location\n"
+        "pub fn assert_that(ok: bool): void {\n"
+        "}\n"
+        "fn Point.sum(): int {\n"
+        "    return self.x;\n"
+        "}\n"
+        "static fn helper(): int { return 0; }\n";
+    auto decls = declarations(src);
+    auto find = [&](const char* name) -> const Declaration* {
+        for (const auto& d : decls) if (d.name == name) return &d;
+        return nullptr;
+    };
+    CHECK_EQ(decls.size(), size_t(7));
+    CHECK(find("Point") && find("Point")->kind == DeclKind::Struct && find("Point")->line == 3 && find("Point")->column == 11);
+    CHECK(find("Color") && find("Color")->kind == DeclKind::Enum);
+    CHECK(find("LIMIT") && find("LIMIT")->kind == DeclKind::Constant && find("LIMIT")->column == 13);
+    CHECK(find("malloc") && find("malloc")->kind == DeclKind::Function);
+    CHECK(find("assert_that") && find("assert_that")->line == 11);
+    CHECK(find("sum") && find("sum")->kind == DeclKind::Method && find("sum")->container == "Point" && find("sum")->column == 9);
+    CHECK(find("helper") && find("helper")->kind == DeclKind::Function);
+    CHECK(!find("not_a_decl"));
+    CHECK(declarations("").empty());
+    CHECK(declarations("fn\nstruct\nfn (\n").empty()); // half-typed lines are not declarations
+}
+
 // ── SemanticQuery's text-only parts ─────────────────────────────────────────
 
 static void testRegions() {
@@ -338,6 +377,7 @@ int main() {
     testDiffLines();
     testFolding();
     testImports();
+    testDeclarations();
     testRegions();
     testImportInsertion();
     testUri();

@@ -234,6 +234,18 @@ public:
     static std::optional<SignatureHelp> getSignatureHelp(const DocumentAnalysis& analysis,
                                                          const std::string& text, size_t byteOffset);
 
+    // Inlay hints (textDocument/inlayHint): the name of the parameter each
+    // argument of a call goes to, written before the argument (`add(a: 1, b: 2)`),
+    // for the calls whose arguments start in [startByte, endByte). Only calls that
+    // resolve to a function with that many parameters get hints, and an argument
+    // that is just the parameter's own name gets none (it would say it twice).
+    struct InlayHintInfo {
+        size_t byteOffset = 0; // where the hint sits: the start of the argument
+        std::string label;     // `name:`
+    };
+    static std::vector<InlayHintInfo> getInlayHints(const DocumentAnalysis& analysis, const std::string& text,
+                                                    size_t startByte, size_t endByte);
+
     // Where `import <module>;` goes in `text`: after the last existing import,
     // or, in a file with none, after its header (leading comments, blank
     // lines, and `unsafe module;`). `line` and `character` are 0-based and

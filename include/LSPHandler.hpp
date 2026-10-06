@@ -18,6 +18,7 @@
 #include "DocumentStore.hpp"
 #include "PositionMapper.hpp"
 #include "StdlibLocator.hpp"
+#include "TextFeatures.hpp"
 #include "WorkspaceIndex.hpp"
 
 using json = nlohmann::json;
@@ -78,6 +79,8 @@ private:
     void handleCompletionResolve(const json& request);
     void handleHover(const json& request);
     void handleSignatureHelp(const json& request);
+    void handleInlayHint(const json& request);
+    void handleWorkspaceSymbol(const json& request);
     void handleDefinition(const json& request);
     // `declaration` reuses doDefinition() verbatim as its work body -- for
     // turf-lang, declaration and definition coincide for every symbol kind
@@ -107,6 +110,8 @@ private:
     void doCompletionResolve(json id, json item, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doHover(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doSignatureHelp(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doInlayHint(json id, std::string uri, LspRange range, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doWorkspaceSymbol(json id, std::string query, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doDefinition(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doTypeDefinition(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doDocumentHighlight(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
@@ -207,6 +212,15 @@ private:
     // client declaring LocationLink support for one of the three declares
     // it for all three, rather than storing three separate flags for a
     // distinction no real client actually makes.
+    // Declarations of files that are not open, for workspace symbol search,
+    // keyed by path and re-read when the file's modification time changes.
+    // Worker thread only.
+    struct CachedDeclarations {
+        long long modified = 0;
+        std::vector<turf_lsp::Declaration> declarations;
+    };
+    std::unordered_map<std::string, CachedDeclarations> m_declarationCache;
+
     bool m_linkSupport = false;
     // initializationOptions from the client (the `turf.diagnostics.enable` and
     // `turf.completion.snippets` settings); changing either restarts the server.
