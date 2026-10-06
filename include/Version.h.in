@@ -8,6 +8,12 @@
 // duplicated in LSPHandler.cpp).
 #define TURF_LSP_VERSION "@PROJECT_VERSION@"
 
+// The compiler revision this server was built against (git, at configure
+// time; "unknown" outside a git checkout). The server embeds the compiler's
+// front end, and its standard library must be the matching one, so a bug
+// report needs this.
+#define TURF_LSP_COMPILER_REV "@TURF_LSP_COMPILER_REV@"
+
 // The LSP spec version this server targets (doc 01), not the server's own
 // release version -- distinct axes, both worth printing in --version output.
 #define TURF_LSP_PROTOCOL_VERSION "3.17"

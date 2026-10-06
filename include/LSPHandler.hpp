@@ -17,6 +17,7 @@
 #include "CompilerService.hpp"
 #include "DocumentStore.hpp"
 #include "PositionMapper.hpp"
+#include "StdlibLocator.hpp"
 #include "WorkspaceIndex.hpp"
 
 using json = nlohmann::json;
@@ -45,7 +46,15 @@ public:
     // class comment).
     void handleMessage(const std::string& message);
 
+    // Where the standard library was found at startup (or that it was not),
+    // so the user is told once the client is listening: a server with no
+    // stdlib answers every `import` with an error, and the cause is not
+    // something a diagnostic on line 1 explains well.
+    void setStdlib(turf_lsp::StdlibLocation location) { m_stdlib = std::move(location); }
+
 private:
+    turf_lsp::StdlibLocation m_stdlib;
+
     // ---- Dispatch (I/O thread) ----
     void dispatch(const json& msg);
     bool isRequest(const json& msg) const;

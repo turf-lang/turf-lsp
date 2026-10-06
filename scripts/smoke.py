@@ -20,7 +20,7 @@ import argparse
 import json
 import os
 import pathlib
-import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -129,6 +129,14 @@ class Client:
     def mark(self):
         with self.cv:
             return len(self.messages)
+
+    def handshake(self, root_uri):
+        self.init = self.result("initialize", {
+            "processId": os.getpid(), "rootUri": root_uri,
+            "capabilities": {"textDocument": {"completion": {"completionItem": {"snippetSupport": True}}},
+                             "general": {"positionEncodings": ["utf-16"]}}})
+        self.notify("initialized", {})
+        return self
 
     def stop(self):
         try:
@@ -408,13 +416,102 @@ def t_formatting(c, d):
         "edits for an already formatted file")
 
 
+class Skipped(Exception):
+    pass
+
+
+def t_version_reports_the_stdlib(c, d):
+    if H.stdlib_from is None:
+        raise Skipped("needs --stdlib-from")
+    staged = H.stage("version", with_stdlib=True)
+    out = subprocess.run([str(staged), "--version"], capture_output=True, text=True, env=H.clean_env())
+    check(out.returncode == 0, "--version failed: %r" % out.stderr)
+    lines = out.stdout.splitlines()
+    check(lines[0].startswith("turf-lsp "), "first line is not the version: %r" % lines[:1])
+    check(any(l.startswith("compiler ") for l in lines), "no compiler revision line: %r" % lines)
+    root = str(staged.parent.parent)
+    check(any(l.startswith("stdlib " + root) for l in lines),
+          "--version does not report the stdlib next to the server (%s): %r" % (root, lines))
+
+
+def t_stdlib_missing_is_reported_not_fatal(c, d):
+    """No standard library anywhere near the server: it must say so in the
+    editor, stay up, and answer -- not exit, which is what it used to do."""
+    if H.stdlib_from is None:
+        raise Skipped("needs --stdlib-from")
+    cl = H.start(H.stage("bare", with_stdlib=False), "bare")
+    try:
+        msg = cl.wait_for("window/showMessage", lambda p: "standard library" in p["message"], 10)
+        check(msg["type"] == 1, "the missing stdlib is not an error message: %r" % msg)
+        doc = Doc(cl, d / "nostd.tr", "import io;\n\nfn main(): int {\n    return 0;\n}\n")
+        diags = doc.diagnostics()
+        check(any(x.get("code") == "E027" for x in diags), "no 'module not found' diagnostic: %r" % diags)
+        syms = cl.result("textDocument/documentSymbol", {"textDocument": doc.td()})
+        check("main" in json.dumps(syms), "the server stopped answering requests")
+    finally:
+        cl.stop()
+
+
+def t_bad_turf_home_is_ignored(c, d):
+    """A stale TURF_HOME in the user's environment must not break imports."""
+    if H.stdlib_from is None:
+        raise Skipped("needs --stdlib-from")
+    cl = H.start(H.stage("badhome", with_stdlib=True), "badhome",
+                 env_extra={"TURF_HOME": "/nonexistent-turf-home"})
+    try:
+        msg = cl.wait_for("window/showMessage", lambda p: "TURF_HOME" in p["message"], 10)
+        check(msg["type"] == 2, "a bad TURF_HOME is not reported as a warning: %r" % msg)
+        doc = Doc(cl, d / "badhome.tr", FEATURES)
+        check(doc.diagnostics() == [], "imports fail although the stdlib is next to the server")
+        got = labels(cl.result("textDocument/completion", {
+            "textDocument": doc.td(), "position": doc.pos("printline", offset=0)}))
+        check(got != [], "no completion")
+    finally:
+        cl.stop()
+
+
 TESTS = [(n[2:], f) for n, f in sorted(globals().items()) if n.startswith("t_")]
+H = None
+
+
+class Harness:
+    """Where the servers under test come from, and what they run next to."""
+
+    def __init__(self, server, stdlib_from, work):
+        self.server, self.stdlib_from, self.work = server, stdlib_from, work
+
+    @staticmethod
+    def clean_env():
+        env = dict(os.environ)
+        env.pop("TURF_HOME", None)
+        env.pop("TURF_COMPILER", None)
+        return env
+
+    def stage(self, name, with_stdlib):
+        """An install laid out as the extension bundles it: <root>/bin/turf-lsp
+        and <root>/lib/std. The binary is copied, not linked: the server finds
+        its stdlib from where its real executable lives."""
+        root = self.work / ("install-" + name)
+        (root / "bin").mkdir(parents=True)
+        target = root / "bin" / self.server.name
+        shutil.copy2(self.server, target)
+        if with_stdlib:
+            shutil.copytree(self.stdlib_from / "lib" / "std", root / "lib" / "std")
+        return target
+
+    def start(self, server_path, name, env_extra=None):
+        env = self.clean_env()
+        env.update(env_extra or {})
+        return Client(str(server_path), env, self.work / (name + ".log")).handshake(uri_of(self.work))
 
 
 def main():
+    global H
     ap = argparse.ArgumentParser()
     ap.add_argument("--server", default=str(ROOT / "build" / "turf-lsp"))
     ap.add_argument("--turf-home")
+    ap.add_argument("--stdlib-from", help="a compiler checkout or Turf install whose lib/std is "
+                    "copied next to a staged copy of the server, which then runs with TURF_HOME unset")
     ap.add_argument("--only")
     args = ap.parse_args()
     server = pathlib.Path(args.server)
@@ -422,28 +519,34 @@ def main():
         print("FAIL: %s not built" % server)
         return 1
 
-    env = dict(os.environ)
-    env.pop("TURF_HOME", None)
-    env.pop("TURF_COMPILER", None)
+    work = pathlib.Path(tempfile.mkdtemp(prefix="turf-lsp-smoke-"))
+    H = Harness(server.resolve(), pathlib.Path(args.stdlib_from).resolve() if args.stdlib_from else None, work)
+    if args.stdlib_from and not (H.stdlib_from / "lib" / "std").is_dir():
+        print("FAIL: %s has no lib/std" % args.stdlib_from)
+        return 1
+
+    # Which server the feature tests run against:
+    #   --stdlib-from  a staged install, TURF_HOME unset ("install it and it works")
+    #   --turf-home    the server where it is built, with that TURF_HOME
+    #   neither        the server where it is built, TURF_HOME unset
+    env = H.clean_env()
     if args.turf_home:
         env["TURF_HOME"] = args.turf_home
-
-    work = pathlib.Path(tempfile.mkdtemp(prefix="turf-lsp-smoke-"))
+    main_server = H.stage("main", with_stdlib=True) if H.stdlib_from else server
     log = work / "server.log"
-    client = Client(str(server), env, log)
-    failed = 0
+    client = Client(str(main_server), env, log)
+    failed = skipped = 0
     try:
-        client.init = client.result("initialize", {
-            "processId": os.getpid(), "rootUri": uri_of(work),
-            "capabilities": {"textDocument": {"completion": {"completionItem": {"snippetSupport": True}}},
-                             "general": {"positionEncodings": ["utf-16"]}}})
-        client.notify("initialized", {})
+        client.handshake(uri_of(work))
         for name, fn in TESTS:
             if args.only and args.only not in name:
                 continue
             try:
                 fn(client, work)
                 print("ok   %s" % name)
+            except Skipped as e:
+                skipped += 1
+                print("skip %s: %s" % (name, e))
             except ServerDied as e:
                 failed += 1
                 print("FAIL %s: %s -- the remaining tests did not run; see the server log" % (name, e))
@@ -455,7 +558,8 @@ def main():
                 print("FAIL %s: %s" % (name, why))
     finally:
         client.stop()
-    print("smoke: %s (server log: %s)" % ("%d failed" % failed if failed else "all passed", log))
+    note = " (%d skipped)" % skipped if skipped else ""
+    print("smoke: %s%s (server log: %s)" % ("%d failed" % failed if failed else "all passed", note, log))
     return 1 if failed else 0
 
 

@@ -17,6 +17,23 @@ FetchContent_MakeAvailable(json)
 # Setup includes
 include_directories(include)
 
+# Where the compiler checkout is. The default is the layout the README
+# documents (turf-lang/ and turf-lsp/ side by side); any other directory name
+# is passed as -DTURF_LANG_DIR=<path>.
+set(TURF_LANG_DIR "${CMAKE_SOURCE_DIR}/../turf-lang" CACHE PATH "turf-lang (compiler) checkout")
+
+# The compiler revision, for `turf-lsp --version`. Not a build input: a
+# checkout that is not a git repository (a source archive) just says unknown.
+execute_process(
+    COMMAND git -C ${TURF_LANG_DIR} rev-parse --short=12 HEAD
+    OUTPUT_VARIABLE TURF_LSP_COMPILER_REV
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE _turf_rev_status)
+if(NOT _turf_rev_status EQUAL 0 OR TURF_LSP_COMPILER_REV STREQUAL "")
+    set(TURF_LSP_COMPILER_REV "unknown")
+endif()
+
 # Generate Version.h from the project() version above -- single source of
 # truth for both the --version CLI flag and serverInfo.version.
 configure_file(${CMAKE_SOURCE_DIR}/include/Version.h.in ${CMAKE_BINARY_DIR}/generated/Version.h @ONLY)
@@ -33,14 +50,10 @@ set(SOURCES
     src/PositionMapper.cpp
     src/DocumentStore.cpp
     src/WorkspaceIndex.cpp
+    src/StdlibLocator.cpp
 )
 
 add_executable(turf-lsp ${SOURCES})
-
-# Where the compiler checkout is. The default is the layout the README
-# documents (turf-lang/ and turf-lsp/ side by side); any other directory name
-# is passed as -DTURF_LANG_DIR=<path>.
-set(TURF_LANG_DIR "${CMAKE_SOURCE_DIR}/../turf-lang" CACHE PATH "turf-lang (compiler) checkout")
 
 # The language server runs the compiler's front end only, never `--smart`, so
 # it does not need the local-model runtime (vendored llama.cpp). Off unless the

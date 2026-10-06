@@ -396,6 +396,24 @@ void LSPHandler::handleInitialize(const json& request) {
 
 void LSPHandler::handleInitialized(const json&) {
     Logger::info("turf-lsp initialized successfully.");
+
+    // The client is listening now: tell the user what is wrong with the
+    // installation, in the editor, instead of leaving them with `import`
+    // errors and a log file they do not know to open. LSP MessageType:
+    // 1 = Error, 2 = Warning.
+    auto show = [&](int type, const std::string& text) {
+        sendMessage({{"jsonrpc", "2.0"},
+                     {"method", "window/showMessage"},
+                     {"params", {{"type", type}, {"message", text}}}});
+    };
+    if (!m_stdlib.found()) {
+        std::string where;
+        for (const auto& s : m_stdlib.searched) where += (where.empty() ? "" : ", ") + s;
+        show(1, "Turf: the standard library (lib/std) was not found, so `import` will not work. "
+                "Reinstall the Turf extension, or set \"turf.home\" to a Turf installation. "
+                "Looked in: " + (where.empty() ? "(nowhere: the server's own location is unknown)" : where));
+    }
+    for (const auto& w : m_stdlib.warnings) show(2, "Turf: " + w);
 }
 
 void LSPHandler::handleShutdown(const json& request) {
