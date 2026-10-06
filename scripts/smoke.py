@@ -131,11 +131,14 @@ class Client:
         with self.cv:
             return len(self.messages)
 
-    def handshake(self, root_uri):
-        self.init = self.result("initialize", {
+    def handshake(self, root_uri, options=None):
+        params = {
             "processId": os.getpid(), "rootUri": root_uri,
             "capabilities": {"textDocument": {"completion": {"completionItem": {"snippetSupport": True}}},
-                             "general": {"positionEncodings": ["utf-16"]}}})
+                             "general": {"positionEncodings": ["utf-16"]}}}
+        if options is not None:
+            params["initializationOptions"] = options
+        self.init = self.result("initialize", params)
         self.notify("initialized", {})
         return self
 
@@ -725,6 +728,54 @@ def t_project_broken_manifest_is_reported(c, d):
     check("main" in json.dumps(syms), "the file is not analysed on its own after a manifest error")
 
 
+def t_setting_diagnostics_disabled(c, d):
+    """`turf.diagnostics.enable` = false: nothing is published but the empty list."""
+    if H.stdlib_from is None:
+        raise Skipped("needs --stdlib-from")
+    cl = H.start(H.stage("nodiag", with_stdlib=True), "nodiag", options={"diagnosticsEnable": False})
+    try:
+        doc = Doc(cl, d / "nodiag.tr", WITH_ERROR)
+        check(doc.diagnostics() == [], "diagnostics were published although they are turned off")
+        # Everything else still works.
+        syms = cl.result("textDocument/documentSymbol", {"textDocument": doc.td()})
+        check("main" in json.dumps(syms), "the server stopped answering with diagnostics off")
+    finally:
+        cl.stop()
+
+
+def t_setting_snippets_disabled(c, d):
+    """`turf.completion.snippets` = false: plain insertions, no templates."""
+    if H.stdlib_from is None:
+        raise Skipped("needs --stdlib-from")
+    cl = H.start(H.stage("nosnip", with_stdlib=True), "nosnip", options={"completionSnippets": False})
+    try:
+        items = complete_at(cl, d, "nosnip.tr", COMPLETION_BASE.replace("PLACE", "w"), "w\n", offset=1)
+        check(items, "no completions")
+        check(not [i for i in items if i.get("insertTextFormat") == 2], "snippet items are offered with snippets off")
+        check(not [i for i in items if i["label"] in ("foreach", "ifelse")], "template-only items are offered with snippets off")
+        check("while" in labels(items), "plain keywords disappeared too")
+    finally:
+        cl.stop()
+
+
+def t_manifest_change_refreshes_diagnostics(c, d):
+    """Fixing a broken turf.toml on disk clears its error without touching the
+    source file: the client reports the change (workspace/didChangeWatchedFiles)."""
+    need_turf()
+    proj = d / "refresh"
+    (proj / "src").mkdir(parents=True, exist_ok=True)
+    manifest = proj / "turf.toml"
+    manifest.write_text("[package\nbroken\n")
+    doc = Doc(c, proj / "src" / "main.tr", "fn main(): int {\n    return 0;\n}\n")
+    check(any("turf graph failed" in x["message"] for x in doc.diagnostics(timeout=30)), "the broken manifest is not reported")
+    manifest.write_text(MANIFEST % ("refresh", ""))
+    mark = c.mark()
+    c.notify("workspace/didChangeWatchedFiles", {"changes": [{"uri": uri_of(manifest), "type": 2}]})
+    got = c.wait_for("textDocument/publishDiagnostics", lambda p: p["uri"] == doc.uri, 30, mark)
+    check(not any("turf graph failed" in x["message"] for x in got["diagnostics"]),
+          "the manifest error is still shown after the manifest was fixed: %s" % json.dumps(got["diagnostics"])[:300])
+
+
 def t_version_reports_the_stdlib(c, d):
     if H.stdlib_from is None:
         raise Skipped("needs --stdlib-from")
@@ -908,10 +959,10 @@ class Harness:
             shutil.copytree(self.stdlib_from / "lib" / "std", root / "lib" / "std")
         return target
 
-    def start(self, server_path, name, env_extra=None):
+    def start(self, server_path, name, env_extra=None, options=None):
         env = self.clean_env()
         env.update(env_extra or {})
-        return Client(str(server_path), env, self.work / (name + ".log")).handshake(uri_of(self.work))
+        return Client(str(server_path), env, self.work / (name + ".log")).handshake(uri_of(self.work), options)
 
 
 def main():

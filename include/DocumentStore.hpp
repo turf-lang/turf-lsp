@@ -83,6 +83,11 @@ public:
     };
     std::optional<AnalysisSnapshot> getAnalysis(const std::string& uri) const;
 
+    // Forgets every stored analysis, so the next request for each document
+    // analyses it afresh, though its text has not changed -- for when what
+    // the analysis read has: a project manifest, or a module on disk.
+    void invalidateAnalyses();
+
 private:
     mutable std::mutex m_mutex;
     std::unordered_map<std::string, OpenDocument> m_docs;

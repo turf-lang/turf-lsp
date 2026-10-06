@@ -70,6 +70,14 @@ void DocumentStore::setAnalysis(const std::string& uri, int64_t version,
     it->second.analyzedVersion = version;
 }
 
+void DocumentStore::invalidateAnalyses() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (auto& entry : m_docs) {
+        entry.second.analysis.reset();
+        entry.second.analyzedVersion = -1;
+    }
+}
+
 std::optional<DocumentStore::AnalysisSnapshot> DocumentStore::getAnalysis(const std::string& uri) const {
     std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_docs.find(uri);

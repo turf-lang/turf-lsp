@@ -1,23 +1,46 @@
 {
-  "name": "turf-vscode",
-  "displayName": "Turf Language Server",
-  "description": "Official VSCode extension for the Turf programming language",
+  "name": "turf",
+  "displayName": "Turf",
+  "description": "The Turf programming language: diagnostics, completion, hover, go to definition, formatting and more, with nothing else to install.",
   "version": "0.1.0",
   "publisher": "turflang",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/turf-lang/turf-lsp.git"
+  },
+  "homepage": "https://github.com/turf-lang/turf-lsp#readme",
+  "bugs": {
+    "url": "https://github.com/turf-lang/turf-lsp/issues"
+  },
+  "keywords": ["turf", "turflang", "language server", "lsp"],
   "engines": {
     "vscode": "^1.80.0"
   },
+  "turf": {
+    "minServerVersion": "0.1.0"
+  },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Snippets",
+    "Formatters"
+  ],
+  "extensionKind": [
+    "workspace"
   ],
   "activationEvents": [
-    "onLanguage:turf"
+    "onLanguage:turf",
+    "workspaceContains:**/turf.toml"
   ],
   "main": "./out/extension.js",
   "capabilities": {
     "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In a workspace you have not trusted, Turf still analyses your code (the language server only reads it), but Run, Build, Test and Check are disabled: they would compile and run the workspace's code."
+    },
+    "virtualWorkspaces": {
       "supported": false,
-      "description": "Turf's language server compiles and analyzes source with a native binary; this is not safe to run automatically against untrusted workspaces."
+      "description": "The Turf language server reads real files on disk (imports, project manifests), so it needs a local folder."
     }
   },
   "contributes": {
@@ -36,10 +59,49 @@
         "path": "./syntaxes/turf.tmLanguage.json"
       }
     ],
+    "configurationDefaults": {
+      "[turf]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.semanticHighlighting.enabled": true
+      }
+    },
     "commands": [
+      { "command": "turf.restartServer", "title": "Restart Language Server", "category": "Turf" },
+      { "command": "turf.showServerLog", "title": "Show Language Server Log", "category": "Turf" },
+      { "command": "turf.run", "title": "Run", "category": "Turf", "icon": "$(play)" },
+      { "command": "turf.build", "title": "Build", "category": "Turf" },
+      { "command": "turf.check", "title": "Check (diagnostics only)", "category": "Turf" },
+      { "command": "turf.test", "title": "Run Tests", "category": "Turf", "icon": "$(beaker)" },
+      { "command": "turf.installToolchain", "title": "How to Install the Turf Toolchain", "category": "Turf" },
+      { "command": "turf.showStatus", "title": "Show Status", "category": "Turf" }
+    ],
+    "menus": {
+      "editor/title/run": [
+        { "command": "turf.run", "when": "resourceLangId == turf", "group": "navigation@1" }
+      ],
+      "commandPalette": [
+        { "command": "turf.run", "when": "editorLangId == turf" },
+        { "command": "turf.build", "when": "editorLangId == turf" },
+        { "command": "turf.check", "when": "editorLangId == turf" }
+      ]
+    },
+    "taskDefinitions": [
       {
-        "command": "turf.restartServer",
-        "title": "Turf: Restart Language Server"
+        "type": "turf",
+        "required": ["command"],
+        "properties": {
+          "command": {
+            "type": "string",
+            "enum": ["run", "build", "check", "test"],
+            "description": "The turf command to run."
+          },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Extra arguments passed to the command."
+          }
+        }
       }
     ],
     "configuration": {
@@ -49,12 +111,17 @@
         "turf.server.path": {
           "type": "string",
           "default": "",
-          "description": "Path to the turf-lsp executable. If empty, the extension looks for a build next to the open workspace, then falls back to 'turf-lsp' on PATH."
+          "markdownDescription": "Path to a `turf-lsp` executable, to use instead of the one that comes with this extension. Leave empty to use the bundled server (recommended)."
         },
         "turf.home": {
           "type": "string",
           "default": "",
-          "description": "Value for the TURF_HOME environment variable passed to the server, used to resolve stdlib/installed-package imports. Leave empty to use the server's own default."
+          "markdownDescription": "A Turf installation to take the standard library from, instead of the one bundled with the server. Leave empty unless you work on the standard library itself."
+        },
+        "turf.toolchain.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `turf` command-line tool, used by **Run**, **Build**, **Test** and **Check**. Leave empty to look on `PATH` and in the default install locations (`~/.turf`)."
         },
         "turf.trace.server": {
           "type": "string",
@@ -65,25 +132,71 @@
         "turf.diagnostics.enable": {
           "type": "boolean",
           "default": true,
-          "description": "Enable diagnostics (errors/warnings) published by the language server."
+          "description": "Show errors and warnings from the language server."
         },
         "turf.format.onSave": {
           "type": "boolean",
           "default": false,
-          "description": "Run the Turf formatter automatically when saving a .tr file."
+          "markdownDescription": "Format Turf files when saving them. (You can also use the standard `editor.formatOnSave` for `[turf]`.)"
         },
         "turf.completion.snippets": {
           "type": "boolean",
           "default": true,
-          "description": "Include snippet-style (tab-stop) completions, e.g. call argument placeholders."
+          "description": "Offer completions with tab stops, e.g. call arguments and control-flow templates."
+        },
+        "turf.codeLens.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Run and Run Tests links above `main` and in test files."
+        },
+        "turf.testing.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the project's tests in the Testing view."
         }
       }
-    }
+    },
+    "walkthroughs": [
+      {
+        "id": "turf.gettingStarted",
+        "title": "Get Started with Turf",
+        "description": "Write, check and run your first Turf program.",
+        "steps": [
+          {
+            "id": "turf.hello",
+            "title": "Write a program",
+            "description": "Create a file named `hello.tr` and type `main`, then press Tab. Completion, hover, signature help and go to definition work as you type, and imports are suggested for you.",
+            "media": { "markdown": "media/walkthrough/hello.md" }
+          },
+          {
+            "id": "turf.imports",
+            "title": "Everything is one keystroke away",
+            "description": "Type the name of a module such as `json` and accept it: its `import` line is added for you. Press Ctrl+. on an error for a quick fix.",
+            "media": { "markdown": "media/walkthrough/imports.md" }
+          },
+          {
+            "id": "turf.run",
+            "title": "Run it",
+            "description": "Run the file with the Turf toolchain.\n[Run](command:turf.run)",
+            "media": { "markdown": "media/walkthrough/run.md" },
+            "completionEvents": ["onCommand:turf.run"]
+          },
+          {
+            "id": "turf.toolchain",
+            "title": "Get the Turf toolchain",
+            "description": "Editing needs nothing else, but running programs needs the Turf compiler.\n[How to install](command:turf.installToolchain)",
+            "media": { "markdown": "media/walkthrough/toolchain.md" },
+            "completionEvents": ["onCommand:turf.installToolchain"]
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node ./out/test/unit.js"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"

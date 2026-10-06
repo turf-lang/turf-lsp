@@ -90,6 +90,7 @@ private:
     void handleDocumentSymbol(const json& request);
     void handleFormatting(const json& request);
     void handleRangeFormatting(const json& request);
+    void handleDidChangeWatchedFiles(const json& notification);
     void handleFoldingRange(const json& request);
     void handleDocumentLink(const json& request);
     void handlePrepareRename(const json& request);
@@ -207,6 +208,10 @@ private:
     // it for all three, rather than storing three separate flags for a
     // distinction no real client actually makes.
     bool m_linkSupport = false;
+    // initializationOptions from the client (the `turf.diagnostics.enable` and
+    // `turf.completion.snippets` settings); changing either restarts the server.
+    std::atomic<bool> m_diagnosticsEnabled{true};
+    std::atomic<bool> m_completionSnippets{true};
 
     // Worker thread + single-consumer queue.
     std::thread m_workerThread;

@@ -300,6 +300,7 @@ void LSPHandler::dispatch(const json& msg) {
     if (method == "textDocument/didOpen") { handleDidOpen(msg); return; }
     if (method == "textDocument/didChange") { handleDidChange(msg); return; }
     if (method == "textDocument/didClose") { handleDidClose(msg); return; }
+    if (method == "workspace/didChangeWatchedFiles") { handleDidChangeWatchedFiles(msg); return; }
     if (method == "textDocument/completion") { handleCompletion(msg); return; }
     if (method == "completionItem/resolve") { handleCompletionResolve(msg); return; }
     if (method == "textDocument/hover") { handleHover(msg); return; }
@@ -343,6 +344,14 @@ void LSPHandler::handleInitialize(const json& request) {
 
     auto textDocCaps = capabilities.value("textDocument", json::object());
     m_linkSupport = textDocCaps.value("definition", json::object()).value("linkSupport", false);
+
+    // The client's settings (the VS Code extension sends its `turf.*`
+    // settings here); a missing key means the default, on.
+    if (params.contains("initializationOptions") && params["initializationOptions"].is_object()) {
+        const auto& options = params["initializationOptions"];
+        m_diagnosticsEnabled = options.value("diagnosticsEnable", true);
+        m_completionSnippets = options.value("completionSnippets", true);
+    }
 
     std::vector<std::string> folders;
     if (params.contains("workspaceFolders") && params["workspaceFolders"].is_array()) {
@@ -493,6 +502,32 @@ void LSPHandler::handleDidChange(const json& notification) {
 
     if (!contentChanges.empty()) {
         scheduleDebouncedDiagnostics(uri, version);
+    }
+}
+
+// workspace/didChangeWatchedFiles: something on disk that an analysis reads
+// changed without an editor edit -- a project's turf.toml or turf.lock (new
+// dependency, renamed package), or a .tr file nobody has open (a git checkout,
+// a code generator). Every open document is then analysed again. Changes to a
+// file that IS open are ignored: its text comes from the editor, and a save
+// would otherwise re-analyse everything for nothing.
+void LSPHandler::handleDidChangeWatchedFiles(const json& notification) {
+    auto params = notification.value("params", json::object());
+    bool relevant = false;
+    bool sourceFilesChanged = false;
+    auto endsWith = [](const std::string& s, const std::string& suffix) {
+        return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+    for (const auto& change : params.value("changes", json::array())) {
+        const std::string uri = change.value("uri", "");
+        if (endsWith(uri, "/turf.toml") || endsWith(uri, "/turf.lock")) { relevant = true; continue; }
+        if (endsWith(uri, ".tr") && !m_documents.contains(uri)) { relevant = true; sourceFilesChanged = true; }
+    }
+    if (!relevant) return;
+    if (sourceFilesChanged) m_workspaceIndex.rescan(); // files were added or removed
+    m_documents.invalidateAnalyses();
+    for (const auto& uri : m_documents.openUris()) {
+        if (auto snap = m_documents.getText(uri)) scheduleDebouncedDiagnostics(uri, snap->version);
     }
 }
 
@@ -873,7 +908,11 @@ void LSPHandler::doPublishDiagnostics(std::string uri) {
     // resolving an `import`ed module is attributed to THAT file's path and
     // must be published against its own uri, not the primary document's.
     std::map<std::string, std::vector<json>> byFile;
-    for (const auto& md : analysis->diagnostics) {
+    // `turf.diagnostics.enable` off: publish nothing but the empty list, which
+    // still clears squiggles from before.
+    static const std::vector<MappedDiagnostic> noDiagnostics;
+    const auto& shown = m_diagnosticsEnabled ? analysis->diagnostics : noDiagnostics;
+    for (const auto& md : shown) {
         json d = {
             {"range", jsonRange(rangeForDiagLocation(md.loc, primaryPath, mapper))},
             {"severity", md.isWarning ? 2 : 1},
@@ -1989,7 +2028,7 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
             for (const auto& item : completions) {
                 json lspItem = {{"label", item.label}, {"kind", item.kind}};
                 if (!item.detail.empty()) lspItem["detail"] = item.detail;
-                if (!item.insertSnippet.empty()) {
+                if (!item.insertSnippet.empty() && m_completionSnippets) {
                     lspItem["insertText"] = item.insertSnippet;
                     lspItem["insertTextFormat"] = 2; // Snippet
                 }
@@ -2052,9 +2091,13 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
         }
 
         for (const auto& item : completions) {
+            // `turf.completion.snippets` off: no tab-stop templates. An item
+            // that is only a template (kind 15) is left out; every other item
+            // inserts its plain label.
+            if (!m_completionSnippets && item.kind == 15) continue;
             json lspItem = {{"label", item.label}, {"kind", item.kind}};
             if (!item.detail.empty()) lspItem["detail"] = item.detail;
-            if (!item.insertSnippet.empty()) {
+            if (!item.insertSnippet.empty() && m_completionSnippets) {
                 lspItem["insertText"] = item.insertSnippet;
                 lspItem["insertTextFormat"] = 2; // Snippet
             }
