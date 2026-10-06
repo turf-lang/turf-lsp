@@ -141,7 +141,17 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
     const turf_lsp::ProjectGraph project = m_projects.forFile(std::string(filename));
     options.PackageGraphFile = project.graphFile;
 
-    turf::AnalysisResult result = turf::analyze({{std::string(filename), std::string(source)}}, options);
+    // The analysed document first (the facade's entry file), then every
+    // other open document: an import that loads one of them sees its unsaved
+    // text.
+    std::vector<turf::SourceBuffer> buffers;
+    buffers.push_back({std::string(filename), std::string(source)});
+    if (m_openDocuments) {
+        for (auto& open : m_openDocuments())
+            if (open.Path != filename) buffers.push_back(std::move(open));
+    }
+
+    turf::AnalysisResult result = turf::analyze(buffers, options);
     if (result.cancelled()) return nullptr;
 
     auto analysis = std::make_unique<DocumentAnalysis>(std::move(result));

@@ -198,6 +198,15 @@ LSPHandler::LSPHandler() : m_debounceDelay(200) {
             Logger::warn(std::string("Ignoring malformed TURF_LSP_DEBOUNCE_MS='") + env + "'");
         }
     }
+    // Every analysis sees the text of the other open documents, not their
+    // files on disk (set before the worker starts).
+    m_compiler.setOpenDocuments([this]() {
+        std::vector<turf::SourceBuffer> open;
+        for (const auto& uri : m_documents.openUris()) {
+            if (auto snap = m_documents.getText(uri)) open.push_back({uriToPath(uri), std::move(snap->text)});
+        }
+        return open;
+    });
     m_workerThread = std::thread(&LSPHandler::workerLoop, this);
     m_debounceThread = std::thread(&LSPHandler::debounceLoop, this);
 }

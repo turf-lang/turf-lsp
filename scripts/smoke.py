@@ -160,10 +160,11 @@ def uri_of(path):
 class Doc:
     """An open document: its text, uri, and 0-based positions of things in it."""
 
-    def __init__(self, client, path, text):
+    def __init__(self, client, path, text, save=True):
         self.client, self.path, self.text, self.version = client, path, text, 1
         self.uri = uri_of(path)
-        pathlib.Path(path).write_text(text)
+        if save:  # False: the editor has it open with edits that are not on disk
+            pathlib.Path(path).write_text(text)
         mark = client.mark()
         client.notify("textDocument/didOpen", {"textDocument": {
             "uri": self.uri, "languageId": "turf", "version": 1, "text": text}})
@@ -497,6 +498,20 @@ def t_project_new_module(c, d):
                                         "contentChanges": [{"text": text}]})
     got = c.wait_for("textDocument/publishDiagnostics", lambda p: p["uri"] == doc.uri, 30, mark)
     check(got["diagnostics"] == [], "a module created after startup is not found: %s" % json.dumps(got["diagnostics"])[:400])
+
+
+def t_unsaved_edit_of_another_file_is_seen(c, d):
+    """An import sees the text of a module the user is editing, saved or not."""
+    need_turf()
+    proj = make_project(d)
+    util = proj / "src" / "lib" / "util.tr"
+    edited = util.read_text() + "\npub fn triple(x: int): int {\n    return x * 3;\n}\n"
+    Doc(c, util, edited, save=False)  # open in the editor, edits NOT saved
+    check("triple" not in util.read_text(), "the fixture saved the edit; the test would mean nothing")
+    main = Doc(c, proj / "src" / "main.tr",
+               "import util;\n\nfn main(): int {\n    return util::triple(2);\n}\n")
+    diags = main.diagnostics(timeout=30)
+    check(diags == [], "an unsaved function in an open module is not seen: %s" % json.dumps(diags)[:400])
 
 
 def t_project_broken_manifest_is_reported(c, d):

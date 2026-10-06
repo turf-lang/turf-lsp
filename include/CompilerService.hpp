@@ -19,6 +19,13 @@ public:
     // its own. Worker thread only, like analyze().
     void setTurfExecutable(std::string turfExe) { m_projects.setTurfExecutable(std::move(turfExe)); }
 
+    // The editor's open documents (path, current text). Given to every
+    // analysis as extra buffers, so an import of a module the user is editing
+    // sees the unsaved text, not the file on disk. Called on the worker
+    // thread, once per analysis; must be thread-safe and quick.
+    using OpenDocuments = std::function<std::vector<turf::SourceBuffer>()>;
+    void setOpenDocuments(OpenDocuments provider) { m_openDocuments = std::move(provider); }
+
     // Must only ever be called from the single worker thread that owns the
     // compiler's global mutable state (doc 01 P0.1) -- never from the I/O
     // thread, and never concurrently with another call to analyze().
@@ -44,4 +51,5 @@ public:
 
 private:
     turf_lsp::ProjectGraphProvider m_projects;
+    OpenDocuments m_openDocuments;
 };
