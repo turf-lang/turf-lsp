@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -364,6 +365,96 @@ def t_completion_import_names(c, d):
         "textDocument": doc.td(), "position": {"line": 0, "character": 7}}))
     for want in ("io", "json", "math", "net"):
         check(want in got, "import completion lacks the stdlib module %r: %r" % (want, got[:15]))
+
+
+COMPLETION_BASE = ("import io;\n\nstruct Point {\n    x: int,\n}\n\nfn helper(a: int): int {\n"
+                   "    return a;\n}\n\nfn main(): int {\n    mut count: int = 1;\n    PLACE\n    return 0;\n}\n")
+
+
+def complete_at(c, d, name, text, marker, offset=0, trigger=None):
+    doc = Doc(c, d / name, text)
+    try:
+        doc.diagnostics(timeout=20)
+    except TimeoutError:
+        pass  # a half-typed buffer may not publish; the request itself must still work
+    params = {"textDocument": doc.td(), "position": doc.pos(marker, offset=offset)}
+    if trigger:
+        params["context"] = {"triggerKind": 2, "triggerCharacter": trigger}
+    res = c.result("textDocument/completion", params)
+    return res.get("items", []) if isinstance(res, dict) else (res or [])
+
+
+def t_completion_bare_word_scope(c, d):
+    """What is offered for a bare word is what this file can use there: its
+    locals, functions, types and imported modules -- not the locals of every
+    stdlib function it pulls in, and not modules only `io` imports."""
+    items = complete_at(c, d, "bare.tr", COMPLETION_BASE.replace("PLACE", "co"), "co\n", offset=2)
+    got = labels(items)
+    for want in ("count", "helper", "main", "Point", "io", "while", "int", "true"):
+        check(want in got, "bare-word completion lacks %r" % want)
+    for leaked in ("frac_div", "saw_digit", "readCount", "int_part", "list::List", "strings::StringBuilder", "sys", "list"):
+        check(leaked not in got, "bare-word completion offers %r, which is not usable here" % leaked)
+    check(len(got) == len(set(got)), "duplicate completion labels: %r" % sorted(x for x in got if got.count(x) > 1)[:5])
+    # Real symbols outrank keywords: `count` sorts before `while`.
+    order = {i["label"]: i.get("sortText", i["label"]) for i in items}
+    check(order["count"] < order["while"], "a local does not outrank a keyword")
+
+
+def t_completion_regions(c, d):
+    """Declarations at the top level, statements in a function, only types in
+    a struct body."""
+    top = labels(complete_at(c, d, "top.tr", "import io;\n\nf\n\nfn main(): int {\n    return 0;\n}\n", "f\n", offset=1))
+    for want in ("fn", "struct", "enum", "import", "pub", "extern"):
+        check(want in top, "top-level completion lacks %r" % want)
+    for nope in ("while", "return", "compare", "true"):
+        check(nope not in top, "top-level completion offers the statement keyword %r" % nope)
+    body = labels(complete_at(c, d, "body.tr", COMPLETION_BASE.replace("PLACE", "w"), "w\n", offset=1))
+    for want in ("while", "return", "compare", "if", "for", "defer", "recover", "try"):
+        check(want in body, "statement completion lacks %r" % want)
+    for nope in ("fn", "import", "extern", "pub"):
+        check(nope not in body, "statement completion offers the declaration keyword %r" % nope)
+    fields = labels(complete_at(c, d, "fields.tr", "struct P {\n    x: i\n}\n\nfn main(): int {\n    return 0;\n}\n", "i\n", offset=1))
+    check("int" in fields and "string" in fields, "a field's type is not completed: %r" % fields)
+    check("while" not in fields and "fn" not in fields, "a struct body offers statements: %r" % fields)
+
+
+SYNTAX_COMPLAINT = ("Expected", "Unexpected", "Unclosed", "Statements are not allowed", "Missing")
+
+
+def fill_placeholders(snippet):
+    snippet = re.sub(r"\$\{\d+:([^}]*)\}", r"\1", snippet)
+    snippet = re.sub(r"\$\{\d+\}", "", snippet)
+    return re.sub(r"\$\d+", "", snippet)  # a bare tab stop: $0, $2, ...
+
+
+def t_completion_snippets_parse(c, d):
+    """Every snippet the server offers must be valid TurfLang once its
+    placeholders are filled in: a snippet that inserts a syntax error is worse
+    than none."""
+    top = complete_at(c, d, "stop.tr", "import io;\n\nf\n\nfn main(): int {\n    return 0;\n}\n", "f\n", offset=1)
+    stmt = complete_at(c, d, "sstmt.tr", COMPLETION_BASE.replace("PLACE", "w"), "w\n", offset=1)
+    seen = 0
+    for region, items in (("top", top), ("stmt", stmt)):
+        for it in items:
+            snippet = it.get("insertText")
+            if not snippet or it.get("insertTextFormat") != 2 or it["label"] == "assert":
+                continue
+            body = fill_placeholders(snippet)
+            if it["label"] in ("else", "elseif"):  # they continue an `if`, so they are only valid after one
+                body = "if true {\n    }\n    " + body
+            if region == "top":
+                text = "import io;\n\n" + body + "\n\nfn main(): int {\n    return 0;\n}\n"
+            else:
+                text = COMPLETION_BASE.replace("PLACE", body)
+            doc = Doc(c, d / ("snip_%s_%s.tr" % (region, re.sub(r"\W", "_", it["label"]))), text)
+            diags = doc.diagnostics(timeout=20)
+            # A call such as `helper(a)` is an expression the user ends with
+            # `;` themselves; that alone is not a defect in the snippet.
+            bad = [x["message"].split("\n")[0] for x in diags
+                   if x["message"].startswith(SYNTAX_COMPLAINT) and not x["message"].startswith("Expected ';'")]
+            check(not bad, "snippet %r (%s) is not valid TurfLang: %s\n%s" % (it["label"], region, bad[:2], body))
+            seen += 1
+    check(seen >= 12, "only %d snippets were checked; the server offers fewer than expected" % seen)
 
 
 def t_document_symbols(c, d):

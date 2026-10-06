@@ -1854,7 +1854,10 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
         if (isScopeAccessTrigger) {
             auto analysis = ensureFreshAnalysis(uri, cancelled);
             if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
-            if (analysis) completions = SemanticQuery::getCompletions(*analysis, prefixText, "", compLine);
+            if (analysis) {
+                completions = SemanticQuery::getCompletions(
+                    *analysis, prefixText, {uriToPath(uri), compLine, compCol, SemanticQuery::regionAt(textSnap->text, cursorByte)});
+            }
         }
 
         if (!isScopeAccessTrigger || completions.empty()) {
@@ -1867,7 +1870,8 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
             auto completionAnalysis = m_compiler.analyze(patchedText, path, cancelled);
             if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
             if (completionAnalysis) {
-                completions = SemanticQuery::getCompletions(*completionAnalysis, prefixText, path, compLine);
+                completions = SemanticQuery::getCompletions(
+                    *completionAnalysis, prefixText, {path, compLine, compCol, SemanticQuery::regionAt(textSnap->text, cursorByte)});
             }
         }
 

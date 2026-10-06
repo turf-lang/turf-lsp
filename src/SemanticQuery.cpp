@@ -1,9 +1,13 @@
 #include "SemanticQuery.hpp"
 #include "ASTVisitor.h"
-#include "Parser.h" // ListAvailableModules() -- import completion (doc 05 G2)
+#include "Parser.h"
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <iostream>
+#include <map>
+#include <set>
+#include <sstream>
 #include <unordered_map>
 #include <utility>
 
@@ -1108,12 +1112,152 @@ structMethods(const ResolverSymbolTable& symTable, const std::string& structName
     return out;
 }
 
+// ── Keywords and snippets ───────────────────────────────────────────────────
+//
+// The reserved words come from the compiler (turf::keywords(), the lexer's own
+// table), so a word the language adds is offered without anyone remembering to
+// add it here. What this file decides is where each one makes sense.
+
+// Declarations that only exist at the top level of a file.
+bool isTopLevelOnlyKeyword(const std::string& name) {
+    static const std::set<std::string> names = {"fn", "import", "extern", "export", "static", "operator", "from"};
+    return names.count(name) > 0;
+}
+
+bool isVisibilityKeyword(const std::string& name) { return name == "pub" || name == "public"; }
+
+// Declarations that are valid both at the top level and inside a function
+// (a local struct, a local variable).
+bool isDeclarationAnywhere(const std::string& name) {
+    static const std::set<std::string> names = {"struct", "enum", "machine", "mut", "mutable",
+                                                "immut", "immutable", "unsafe"};
+    return names.count(name) > 0;
+}
+
+bool keywordFits(const turf::Keyword& kw, CompletionRegion region) {
+    switch (region) {
+    case CompletionRegion::TypeBody:
+        // A field's type, or `pub` in front of it.
+        return kw.Kind == turf::KeywordKind::Type || isVisibilityKeyword(kw.Name);
+    case CompletionRegion::TopLevel:
+        return kw.Kind == turf::KeywordKind::Keyword &&
+               (isTopLevelOnlyKeyword(kw.Name) || isVisibilityKeyword(kw.Name) || isDeclarationAnywhere(kw.Name));
+    case CompletionRegion::Statement:
+        if (kw.Kind != turf::KeywordKind::Keyword) return true; // types and literals
+        return !isTopLevelOnlyKeyword(kw.Name) && !isVisibilityKeyword(kw.Name);
+    }
+    return false;
+}
+
+// What accepting the keyword inserts, when more than the word helps. Checked
+// against the compiler by scripts/smoke.py (each must parse once its
+// placeholders are filled in).
+const char* keywordSnippet(const std::string& name, CompletionRegion region) {
+    static const std::map<std::string, const char*> topLevel = {
+        {"fn", "fn ${1:name}(${2}): ${3:int} {\n    $0\n}"},
+        {"struct", "struct ${1:Name} {\n    ${2:field}: ${3:int}\n}"},
+        {"enum", "enum ${1:Name} { ${2:First}, ${3:Second} }"},
+        {"import", "import ${1:io};"},
+        {"extern", "extern fn ${1:name}(${2}): ${3:int};"},
+    };
+    static const std::map<std::string, const char*> statement = {
+        {"if", "if ${1:condition} {\n    $0\n}"},
+        {"elseif", "elseif ${1:condition} {\n    $0\n}"},
+        {"else", "else {\n    $0\n}"},
+        {"while", "while ${1:condition} {\n    $0\n}"},
+        {"do", "do {\n    $0\n} while ${1:condition};"},
+        {"for", "for ${1:i} in ${2:0}..${3:10} step ${1:i} += 1 {\n    $0\n}"},
+        {"compare", "compare ${1:value} {\n    matches ${2:1}:\n        $0\n    done\n    otherwise:\n        ${3:// default}\n}"},
+        {"mut", "mut ${1:name}: ${2:int} = ${3:0};"},
+        {"immut", "immut ${1:name}: ${2:int} = ${3:0};"},
+        {"defer", "defer ${1:cleanup()};"},
+        {"return", "return ${1:0};"},
+    };
+    const auto& table = region == CompletionRegion::TopLevel ? topLevel : statement;
+    if (region == CompletionRegion::TypeBody) return nullptr;
+    auto it = table.find(name);
+    return it == table.end() ? nullptr : it->second;
+}
+
+void appendKeywordItems(std::vector<CompletionItem>& items, CompletionRegion region) {
+    for (const auto& kw : turf::keywords()) {
+        if (!keywordFits(kw, region)) continue;
+        CompletionItem item;
+        item.label = kw.Name;
+        switch (kw.Kind) {
+        case turf::KeywordKind::Keyword: item.kind = 14; item.detail = "keyword"; break;
+        case turf::KeywordKind::Type:    item.kind = 7;  item.detail = "type"; break;
+        case turf::KeywordKind::Literal: item.kind = 21; item.detail = "literal"; break;
+        }
+        if (const char* snippet = keywordSnippet(kw.Name, region)) item.insertSnippet = snippet;
+        item.sortText = "2" + kw.Name;
+        items.push_back(std::move(item));
+    }
+}
+
+// Snippets that are not a keyword of their own.
+void appendSnippetItems(std::vector<CompletionItem>& items, CompletionRegion region) {
+    struct Snippet { const char* label; const char* detail; const char* body; };
+    static const Snippet topLevel[] = {
+        {"main", "program entry point", "fn main(): int {\n    $0\n    return 0;\n}"},
+        {"method", "method of a struct", "fn ${1:Type}.${2:name}(${3}): ${4:void} {\n    $0\n}"},
+    };
+    static const Snippet statement[] = {
+        {"ifelse", "if / else", "if ${1:condition} {\n    $2\n} else {\n    $0\n}"},
+        {"foreach", "for each element", "for ${1:item} in ${2:items} {\n    $0\n}"},
+    };
+    auto add = [&](const Snippet& s) {
+        CompletionItem item;
+        item.label = s.label;
+        item.kind = 15; // Snippet
+        item.detail = s.detail;
+        item.insertSnippet = s.body;
+        item.sortText = std::string("3") + s.label;
+        items.push_back(std::move(item));
+    };
+    if (region == CompletionRegion::TopLevel) for (const auto& s : topLevel) add(s);
+    if (region == CompletionRegion::Statement) for (const auto& s : statement) add(s);
+}
+
 } // namespace
+
+CompletionRegion SemanticQuery::regionAt(const std::string& text, size_t byteOffset) {
+    std::vector<char> blocks; // 'T' a struct/enum body, 'F' anything else (a function body, a nested block)
+    std::string header;       // the text since the last `;`, `{` or `}`: what the next `{` opens
+    const size_t end = std::min(byteOffset, text.size());
+    auto isTypeHeader = [](const std::string& h) {
+        std::istringstream words(h);
+        std::string w;
+        while (words >> w) {
+            if (w == "pub" || w == "public" || w == "export") continue;
+            return w == "struct" || w == "enum" || w == "machine";
+        }
+        return false;
+    };
+    for (size_t i = 0; i < end; ++i) {
+        const char ch = text[i];
+        if (ch == '/' && i + 1 < end && text[i + 1] == '/') { // line comment
+            while (i < end && text[i] != '\n') ++i;
+            continue;
+        }
+        if (ch == '"' || ch == '\'') { // a string or character literal, with its escapes
+            ++i;
+            while (i < end && text[i] != ch) { if (text[i] == '\\') ++i; ++i; }
+            header += ' ';
+            continue;
+        }
+        if (ch == '{') { blocks.push_back(isTypeHeader(header) ? 'T' : 'F'); header.clear(); continue; }
+        if (ch == '}') { if (!blocks.empty()) blocks.pop_back(); header.clear(); continue; }
+        if (ch == ';') { header.clear(); continue; }
+        header += ch;
+    }
+    if (blocks.empty()) return CompletionRegion::TopLevel;
+    return blocks.back() == 'T' ? CompletionRegion::TypeBody : CompletionRegion::Statement;
+}
 
 std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis& analysis,
                                                            const std::string& lineTextBeforeCursor,
-                                                           [[maybe_unused]] const std::string& documentPath,
-                                                           int cursorLine) {
+                                                           const CompletionPlace& where) {
     std::vector<CompletionItem> items;
 
     TriggerContext ctx = classifyTrigger(lineTextBeforeCursor);
@@ -1237,54 +1381,67 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
         return items;
     }
 
-    // Bare word: keywords + types + document variables + current-file
-    // functions + known struct/enum names -- a real superset of what's
-    // usable unqualified here, instead of the old fixed list.
-    static const std::vector<std::string> keywords = {
-        "fn", "mut", "immut", "struct", "extern", "from", "import", "export",
-        "static", "if", "elseif", "else", "while", "for", "in", "step",
-        "give", "otherwise", "break", "continue", "return", "to", "enum"
-    };
-    static const std::vector<std::string> types = {
-        "int", "double", "bool", "string", "ptr", "void"
-    };
-    // doc 05 G6: rank tiers so a real, specific symbol always beats a
-    // generic keyword/primitive-type suggestion that merely happens to
-    // sort earlier alphabetically -- "2" (keywords/types/literals) is
-    // deliberately the LOWEST tier; "0" (locals) and "1" (current-file
-    // functions/structs/enums) both beat it.
-    for (const auto& kw : keywords) items.push_back({kw, 14, "keyword", "", "", "", "2" + kw});
-    for (const auto& ty : types) items.push_back({ty, 7, "type", "", "", "", "2" + ty});
-    items.push_back({"true", 21, "bool", "", "", "", "2true"});
-    items.push_back({"false", 21, "bool", "", "", "", "2false"});
-    items.push_back({"null", 21, "", "", "", "", "2null"});
-    items.push_back({"assert", 3, "Builtin", "assert(${1:condition}, \"${2:message}\")$0", "", "", "2assert"});
+    // Bare word: what is usable unqualified at the cursor. Rank tiers (doc
+    // 05 G6) so a real, specific symbol beats a generic keyword that merely
+    // sorts earlier alphabetically: "0" locals, "1" this file's functions and
+    // types and imported modules, "2" keywords and built-in types, "3"
+    // snippets.
+    const CompletionRegion region = where.region;
+    appendKeywordItems(items, region);
+    appendSnippetItems(items, region);
+    if (region == CompletionRegion::Statement)
+        items.push_back({"assert", 3, "Builtin", "assert(${1:condition}, \"${2:message}\")$0", "", "", "2assert"});
 
-    DocumentIndexVisitor indexer;
-    for (const auto& ast : analysis.asts())
-        if (ast) const_cast<ExprAST*>(ast.get())->accept(indexer);
-    for (const auto& entry : indexer.VariableTypes) {
-        CompletionItem item;
-        item.label = entry.first;
-        item.kind = 6;
-        item.detail = entry.second ? entry.second->getName() : "";
-        // Scope-distance ranking (doc 05 G3): closer declarations first,
-        // any declared AFTER the cursor (a real but less-likely-intended
-        // match -- e.g. still mid-typing the enclosing function) pushed
-        // behind every backward one instead of competing on raw distance.
-        int declLine = 0;
-        if (auto it = indexer.VariableDeclLine.find(entry.first); it != indexer.VariableDeclLine.end())
-            declLine = it->second;
-        int distance = 999999;
-        if (cursorLine > 0 && declLine > 0) {
-            distance = (declLine <= cursorLine) ? (cursorLine - declLine) : (100000 + (declLine - cursorLine));
+    // Variables and parameters in scope AT THE CURSOR, from the analysis
+    // itself. (Not "every variable the resolver ever saw": that included the
+    // locals of every stdlib function the program imports.) Types that this
+    // document can name come further down.
+    if (region == CompletionRegion::Statement) {
+        for (const auto& sym : analysis.result.symbolsInScope(where.documentPath, where.line, where.col)) {
+            if (sym.Kind != turf::SymbolKind::Variable && sym.Kind != turf::SymbolKind::Parameter) continue;
+            CompletionItem item;
+            item.label = sym.Name;
+            item.kind = 6;
+            item.detail = sym.Type ? sym.Type->getName() : "";
+            // Scope-distance ranking (doc 05 G3): closer declarations first,
+            // any declared AFTER the cursor (a real but less-likely-intended
+            // match -- e.g. still mid-typing the enclosing function) pushed
+            // behind every backward one instead of competing on raw distance.
+            int declLine = sym.Declaration ? static_cast<int>(sym.Declaration->Line) : 0;
+            int distance = 999999;
+            if (where.line > 0 && declLine > 0) {
+                distance = (declLine <= where.line) ? (where.line - declLine) : (100000 + (declLine - where.line));
+            }
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "%06d", distance);
+            item.sortText = "0" + std::string(buf) + sym.Name;
+            items.push_back(std::move(item));
         }
-        char buf[16];
-        std::snprintf(buf, sizeof(buf), "%06d", distance);
-        item.sortText = "0" + std::string(buf) + entry.first;
-        items.push_back(std::move(item));
+        // The modules this file can name: the ones it imports (that is how the
+        // standard library is reached, `io::printline`) and the prelude's. NOT
+        // every module the resolver loaded -- `list` and `sys` are only there
+        // because `io` imports them, and are not this file's to use unless it
+        // imports them too. A prelude module that is also a type's name
+        // (`int`, `double`) is already offered as the type.
+        std::set<std::string> modules;
+        for (const auto& ast : analysis.asts())
+            if (auto* import = dynamic_cast<const ModuleImportExprAST*>(ast.get()))
+                modules.insert(import->getModuleName());
+        for (const auto& name : modules) {
+            bool dup = false;
+            for (const auto& it : items) if (it.label == name) { dup = true; break; }
+            if (dup) continue;
+            CompletionItem item;
+            item.label = name;
+            item.kind = 9; // Module
+            item.detail = "module";
+            item.sortText = "1" + name;
+            items.push_back(std::move(item));
+        }
     }
+
     for (const auto& name : symTable.getAllCurrentFileFunctionNames()) {
+        if (region != CompletionRegion::Statement) break; // a call, not a declaration or a field type
         if (name.find('.') != std::string::npos) continue; // struct methods, not bare-callable
         if (auto sym = firstOverload(symTable, name, "")) {
             CompletionItem item;
@@ -1298,8 +1455,16 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
             items.push_back(std::move(item));
         }
     }
-    for (const auto& name : symTable.getAllStructNames()) items.push_back({name, 22, "struct", "", "", "", "1" + name});
-    for (const auto& name : symTable.getAllEnumNames()) items.push_back({name, 22, "enum", "", "", "", "1" + name});
+    // Types this document can name unqualified. A name with a `::` in it is a
+    // type of an imported module (`list::List`), reached through the module
+    // (`list::`), not by its bare name: offering it here would insert text
+    // that does not compile.
+    if (region != CompletionRegion::TopLevel) {
+        for (const auto& name : symTable.getAllStructNames())
+            if (name.find("::") == std::string::npos) items.push_back({name, 22, "struct", "", "", "", "1" + name});
+        for (const auto& name : symTable.getAllEnumNames())
+            if (name.find("::") == std::string::npos) items.push_back({name, 22, "enum", "", "", "", "1" + name});
+    }
 
     return items;
 }

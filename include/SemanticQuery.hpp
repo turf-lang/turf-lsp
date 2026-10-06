@@ -7,6 +7,24 @@
 #include <string>
 #include <vector>
 
+// What kind of place the cursor is in, which decides which keywords and
+// snippets make sense: declarations at the top level, statements inside a
+// function body, only types and `pub` inside a struct or enum body.
+enum class CompletionRegion { TopLevel, Statement, TypeBody };
+
+// Where the cursor is, for a bare-word completion, which is ranked and
+// filtered by it.
+struct CompletionPlace {
+    // The analysed document's path, as the analysis knows it: the key for
+    // "what is in scope at the cursor".
+    std::string documentPath;
+    // 1-indexed, the compiler's convention; 0 = unknown. Drives doc 05 G3's
+    // scope-distance ranking and the in-scope lookup.
+    int line = 0;
+    int col = 0;
+    CompletionRegion region = CompletionRegion::Statement;
+};
+
 // One suggestion offered back to the editor. Deliberately not nlohmann::json
 // directly -- keeps SemanticQuery's completion logic testable/independent of
 // the wire format; LSPHandler does the final JSON-RPC serialization.
@@ -192,17 +210,17 @@ public:
     // symbol table and AST -- real module functions/types after `io::`, real
     // struct fields/methods after `instance.`, real in-scope
     // variables/functions for a bare word, instead of a fixed keyword list.
-    // `documentPath` is the on-disk (or virtual) path of the document being
-    // completed -- used only for Import-context completion (`import
-    // <prefix>`), which needs it to resolve sibling `.tr` files next to the
-    // document via ListAvailableModules(). Every other trigger kind ignores it.
-    // `cursorLine` (1-indexed, compiler convention; 0 = unknown) drives doc
-    // 05 G3's scope-distance ranking for Bare-word local-variable
-    // suggestions; every other trigger kind ignores it too.
+    // The region the cursor (a byte offset into `text`) is in, from the
+    // braces before it. A purely textual scan -- it ignores braces inside
+    // strings, character literals and `//` comments -- because it must work
+    // on the half-typed text an editor has, which no parser accepts.
+    static CompletionRegion regionAt(const std::string& text, size_t byteOffset);
+
+    // `where` says where the cursor is; it only matters for a bare word,
+    // which is ranked and filtered by it.
     static std::vector<CompletionItem> getCompletions(const DocumentAnalysis& analysis,
                                                        const std::string& lineTextBeforeCursor,
-                                                       const std::string& documentPath = "",
-                                                       int cursorLine = 0);
+                                                       const CompletionPlace& where = {});
 
     // doc 05 G2's `import mod::<prefix>` case: detects the shape purely
     // textually (no analysis needed -- `mod` isn't imported into the
