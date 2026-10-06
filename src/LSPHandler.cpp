@@ -1334,7 +1334,7 @@ void LSPHandler::doPrepareRename(json id, std::string uri, LspPosition pos,
             std::string targetFilePath = target->moduleName.empty()
                                               ? docPath
                                               : ResolveModuleFile(target->moduleName, docPath);
-            if (!targetFilePath.empty() && !IsPathUnderLibStd(targetFilePath)) {
+            if (!targetFilePath.empty() && !IsLibStdWarningLocation(targetFilePath)) {
                 if (auto info = SemanticQuery::hover(*analysis, node, compLine, compCol)) {
                     if (info->length > 0) {
                         result = jsonRange(mapper.toLspRange(info->loc.Line, info->loc.Col, info->length));
@@ -1395,7 +1395,7 @@ void LSPHandler::doRename(json id, std::string uri, LspPosition pos, std::string
         std::string docPath = uriToPath(uri);
         std::string targetFilePath = target->moduleName.empty() ? docPath
                                                                   : ResolveModuleFile(target->moduleName, docPath);
-        if (targetFilePath.empty() || IsPathUnderLibStd(targetFilePath)) {
+        if (targetFilePath.empty() || IsLibStdWarningLocation(targetFilePath)) {
             sendError(id, -32602, "Renaming a standard-library symbol isn't supported");
             return;
         }

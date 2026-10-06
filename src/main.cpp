@@ -4,6 +4,7 @@
 #include "LSPHandler.hpp"
 #include "Logger.hpp"
 #include "Version.h"
+#include "AST.h" // CompilerExecutablePath
 #include "llvm/Support/FileSystem.h"
 
 namespace {
@@ -36,16 +37,6 @@ void printHelp() {
 
 } // namespace
 
-// Required by turfcore itself (declared `extern` in AST.h, read by
-// TurfInstallRoot() and SLM::fetchSuggestion()) -- NOT dead code, even
-// though nothing in turf-lsp's own sources reads it directly. It's the
-// compiler-binary-relative fallback TurfInstallRoot() uses to locate the
-// stdlib (`lib/std/`) when neither an explicit `turf.home` setting nor
-// TURF_HOME is set: same directory-relative layout the `turf` CLI itself
-// assumes, just resolved from turf-lsp's own executable path instead of
-// turf's.
-std::string CompilerExecutablePath;
-
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -59,6 +50,10 @@ int main(int argc, char** argv) {
         }
     }
 
+    // CompilerExecutablePath is defined by turfcore (declared `extern` in
+    // AST.h). TurfInstallRoot() falls back to it, when neither TURF_HOME nor
+    // an explicit setting is given, to find the stdlib (`lib/std/`) relative
+    // to this binary: set it before any compiler code runs.
     CompilerExecutablePath = llvm::sys::fs::getMainExecutable(argv[0], (void*)(intptr_t)main);
 
     Logger::init();

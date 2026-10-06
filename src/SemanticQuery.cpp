@@ -55,7 +55,6 @@ public:
     void visitBool(BoolExprAST &Node) override {}
     void visitString(StringExprAST &Node) override {}
     void visitNull(NullExprAST &Node) override {}
-    void visitDefaultInit(DefaultInitExprAST &Node) override {}
 
     void visitVariable(VariableExprAST &Node) override {
         checkNode(&Node, Node.getLoc(), Node.getName().length());

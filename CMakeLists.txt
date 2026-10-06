@@ -37,8 +37,22 @@ set(SOURCES
 
 add_executable(turf-lsp ${SOURCES})
 
-# Add turf-lang subdirectory to get the turfcore target
-add_subdirectory(../turf-lang turflang_build)
+# Where the compiler checkout is. The default is the layout the README
+# documents (turf-lang/ and turf-lsp/ side by side); any other directory name
+# is passed as -DTURF_LANG_DIR=<path>.
+set(TURF_LANG_DIR "${CMAKE_SOURCE_DIR}/../turf-lang" CACHE PATH "turf-lang (compiler) checkout")
+
+# The language server runs the compiler's front end only, never `--smart`, so
+# it does not need the local-model runtime (vendored llama.cpp). Off unless the
+# caller turns it on; a cache entry, so an explicit -DTURF_SMART=ON still wins.
+set(TURF_SMART OFF CACHE BOOL "Build the --smart model runtime into turfcore")
+
+# Add the compiler as a subdirectory to get the turfcore target.
+# EXCLUDE_FROM_ALL: only what turf-lsp links against is built (turfcore), not
+# the compiler executable or the runtime library that compiled programs link,
+# neither of which the language server uses -- and the runtime library would
+# otherwise be written into this source tree's lib/.
+add_subdirectory(${TURF_LANG_DIR} turflang_build EXCLUDE_FROM_ALL)
 
 # Link nlohmann_json, turfcore, and the platform thread library (the
 # worker/debounce thread split -- doc 01 P0.1 -- needs std::thread's
