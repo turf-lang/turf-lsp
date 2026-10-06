@@ -19,6 +19,7 @@
 #include "SemanticQuery.hpp"
 #include "StdlibLocator.hpp"
 #include "TextFeatures.hpp"
+#include "Uri.hpp"
 
 namespace fs = std::filesystem;
 
@@ -214,6 +215,45 @@ static void testImportInsertion() {
     CHECK_EQ(result("", "io"), std::string("import io;\n\n"));
 }
 
+// ── URIs and paths ──────────────────────────────────────────────────────────
+
+static void testUri() {
+    g_test = "Uri";
+    using namespace turf_lsp;
+
+    // POSIX, with the characters that used to break: a space, non-ASCII, '#', '%'.
+    CHECK_EQ(uriToPath("file:///home/me/proj/a.tr"), std::string("/home/me/proj/a.tr"));
+    CHECK_EQ(uriToPath("file:///home/me/my%20project/a.tr"), std::string("/home/me/my project/a.tr"));
+    CHECK_EQ(uriToPath("file:///home/me/caf%C3%A9/a.tr"), std::string("/home/me/caf\xC3\xA9/a.tr"));
+    CHECK_EQ(uriToPath("file:///tmp/a%23b%25c.tr"), std::string("/tmp/a#b%c.tr"));
+    CHECK_EQ(pathToUri("/home/me/my project/a.tr"), std::string("file:///home/me/my%20project/a.tr"));
+    CHECK_EQ(pathToUri("/home/me/caf\xC3\xA9/a.tr"), std::string("file:///home/me/caf%C3%A9/a.tr"));
+    CHECK_EQ(pathToUri("/tmp/a#b%c.tr"), std::string("file:///tmp/a%23b%25c.tr"));
+
+    // Windows: VS Code writes the drive letter in lower case with an encoded colon.
+    CHECK_EQ(uriToPath("file:///c%3A/Users/me/a.tr"), std::string("C:/Users/me/a.tr"));
+    CHECK_EQ(uriToPath("file:///C:/Users/me/a.tr"), std::string("C:/Users/me/a.tr"));
+    CHECK_EQ(uriToPath("file:///c%3A/Users/me/My%20Project/a.tr"), std::string("C:/Users/me/My Project/a.tr"));
+    CHECK_EQ(pathToUri("C:\\Users\\me\\a.tr"), std::string("file:///c%3A/Users/me/a.tr"));
+    CHECK_EQ(pathToUri("C:/Users/me/My Project/a.tr"), std::string("file:///c%3A/Users/me/My%20Project/a.tr"));
+    CHECK_EQ(pathToUri("d:\\x.tr"), std::string("file:///d%3A/x.tr"));
+
+    // UNC paths and `localhost`.
+    CHECK_EQ(uriToPath("file://server/share/a.tr"), std::string("//server/share/a.tr"));
+    CHECK_EQ(pathToUri("\\\\server\\share\\a.tr"), std::string("file://server/share/a.tr"));
+    CHECK_EQ(uriToPath("file://localhost/home/me/a.tr"), std::string("/home/me/a.tr"));
+
+    // Round trips, and the identity on what is not a file URI.
+    for (const char* p : {"/home/me/a b/c.tr", "/tmp/x.tr", "C:/Users/me/a b.tr", "//srv/sh/a.tr", "/home/me/caf\xC3\xA9.tr"})
+        CHECK_EQ(uriToPath(pathToUri(p)), std::string(p));
+    CHECK_EQ(uriToPath("/already/a/path.tr"), std::string("/already/a/path.tr"));
+    CHECK_EQ(pathToUri("file:///already/a/uri.tr"), std::string("file:///already/a/uri.tr"));
+    CHECK_EQ(uriToPath("untitled:Untitled-1"), std::string("untitled:Untitled-1"));
+    // A malformed escape is kept, not eaten.
+    CHECK_EQ(uriToPath("file:///a%zzb.tr"), std::string("/a%zzb.tr"));
+    CHECK_EQ(uriToPath("file:///a%2"), std::string("/a%2"));
+}
+
 // ── Locating the stdlib and the project ─────────────────────────────────────
 
 static void testStdlibLocator() {
@@ -300,6 +340,7 @@ int main() {
     testImports();
     testRegions();
     testImportInsertion();
+    testUri();
     testStdlibLocator();
     testProjectLocator();
     if (g_failed) {

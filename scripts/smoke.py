@@ -601,10 +601,10 @@ class Skipped(Exception):
 MANIFEST = '[package]\nname = "%s"\nversion = "0.1.0"\nturf = "2.0"\n%s'
 
 
-def make_project(d):
+def make_project(d, dirname="proj"):
     """proj depends on dep (a path dependency); proj has src/lib/util.tr, which
     sits in a subdirectory, so only the package graph makes `import util;` work."""
-    proj, dep = d / "proj", d / "dep"
+    proj, dep = d / dirname, d / "dep"
     for p in (proj / "src" / "lib", proj / "tests", dep / "src"):
         p.mkdir(parents=True, exist_ok=True)
     (proj / "turf.toml").write_text(MANIFEST % ("proj", '\n[dependencies]\ndep = { path = "../dep" }\n'))
@@ -648,6 +648,22 @@ def t_project_imports_resolve(c, d):
         "context": {"triggerKind": 2, "triggerCharacter": ":"}}))
     check("double_it" in got, "util:: completion lacks double_it: %r" % got[:15])
     check("hidden_helper" not in got, "util:: offers a private function another module may not call")
+
+
+def t_paths_with_spaces_and_unicode(c, d):
+    """A project in a directory like `My Projects/café` is the ordinary case on
+    a desktop. The editor percent-encodes it in URIs; the server must decode it
+    (it once did not), or nothing resolves."""
+    need_turf()
+    proj = make_project(d / "My Projects", "café app")
+    doc = Doc(c, proj / "src" / "main.tr", PROJECT_MAIN)
+    check("%20" in doc.uri and "%C3%A9" in doc.uri, "the fixture is not percent-encoded: %s" % doc.uri)
+    diags = doc.diagnostics(timeout=30)
+    check(diags == [], "a project under a path with spaces and accents has diagnostics: %s" % json.dumps(diags)[:500])
+    loc = c.result("textDocument/definition", {"textDocument": doc.td(), "position": doc.pos("double_it", offset=2)})
+    loc = loc[0] if isinstance(loc, list) else loc
+    check(loc and loc["uri"].endswith("/src/lib/util.tr") and "%20" in loc["uri"],
+          "definition does not return a properly encoded URI: %r" % loc)
 
 
 def t_project_import_names(c, d):

@@ -53,6 +53,7 @@ add_library(turf_lsp_core OBJECT
     src/StdlibLocator.cpp
     src/ProjectGraph.cpp
     src/TextFeatures.cpp
+    src/Uri.cpp
 )
 
 add_executable(turf-lsp src/main.cpp)

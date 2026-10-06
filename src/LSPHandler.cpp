@@ -2,6 +2,7 @@
 #include "SemanticQuery.hpp"
 #include "Logger.hpp"
 #include "TextFeatures.hpp"
+#include "Uri.hpp"
 #include "Formatter.h"
 #include "Parser.h"
 #include "Version.h"
@@ -232,15 +233,9 @@ bool LSPHandler::isRequest(const json& msg) const {
     return msg.contains("id");
 }
 
-std::string LSPHandler::uriToPath(const std::string& uri) const {
-    if (uri.rfind("file://", 0) == 0) return uri.substr(7);
-    return uri;
-}
+std::string LSPHandler::uriToPath(const std::string& uri) const { return turf_lsp::uriToPath(uri); }
 
-std::string LSPHandler::pathToUri(const std::string& path) const {
-    if (path.rfind("file://", 0) == 0) return path; // already a uri (defensive; callers pass real paths)
-    return "file://" + path;
-}
+std::string LSPHandler::pathToUri(const std::string& path) const { return turf_lsp::pathToUri(path); }
 
 void LSPHandler::handleMessage(const std::string& message) {
     json msg;
@@ -1090,7 +1085,7 @@ void LSPHandler::doDefinition(json id, std::string uri, LspPosition pos, std::sh
                 std::string docPath = uriToPath(uri);
                 std::string resolved = m_compiler.resolveModuleFile(declLocOpt->moduleName, docPath);
                 if (!resolved.empty()) {
-                    targetUri = "file://" + resolved;
+                    targetUri = pathToUri(resolved);
                 } else {
                     haveTarget = false;
                 }
@@ -1167,7 +1162,7 @@ void LSPHandler::doTypeDefinition(json id, std::string uri, LspPosition pos, std
                 std::string docPath = uriToPath(uri);
                 std::string resolved = m_compiler.resolveModuleFile(typeLocOpt->moduleName, docPath);
                 if (!resolved.empty()) {
-                    targetUri = "file://" + resolved;
+                    targetUri = pathToUri(resolved);
                 } else {
                     haveTarget = false;
                 }
@@ -1796,7 +1791,7 @@ void LSPHandler::doDocumentLink(json id, std::string uri, std::shared_ptr<std::a
         const std::string file = m_compiler.resolveModuleFile(import.module, path);
         if (file.empty()) continue; // not found, or ambiguous: the diagnostics say so
         LspRange range = mapper.toLspRange(import.line + 1, import.nameStart + 1, import.nameLength);
-        links.push_back({{"range", jsonRange(range)}, {"target", "file://" + file}, {"tooltip", "Open " + import.module}});
+        links.push_back({{"range", jsonRange(range)}, {"target", pathToUri(file)}, {"tooltip", "Open " + import.module}});
     }
     sendResponse(id, links);
 }
