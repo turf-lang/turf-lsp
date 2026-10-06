@@ -1,5 +1,9 @@
 #include <iostream>
 #include <string>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 #include "LSPFramer.hpp"
 #include "LSPHandler.hpp"
 #include "Logger.hpp"
@@ -50,6 +54,16 @@ void printHelp(const turf_lsp::StdlibLocation& stdlib) {
 } // namespace
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // The protocol is bytes: `Content-Length: N\r\n\r\n` followed by exactly N
+    // bytes of JSON. In the C runtime's default text mode on Windows, stdout
+    // turns every "\n" into "\r\n" (so N is wrong from the first message that
+    // contains a newline) and stdin reads "\r\n" back as "\n". Binary mode,
+    // before anything is read or written, on both.
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+
     // CompilerExecutablePath is defined by turfcore (declared `extern` in
     // AST.h). TurfInstallRoot() falls back to it, when neither TURF_HOME nor
     // an explicit setting is given, to find the stdlib (`lib/std/`) relative
