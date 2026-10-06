@@ -16,8 +16,10 @@ menu: `Preferences > Package Settings > LSP > Settings`):
 }
 ```
 
-To pass `TURF_HOME` to the server, add `"env": {"TURF_HOME": "/path/to/turf/home"}`
-alongside `"command"`.
+The server finds the standard library next to itself when it sits in a `bin/`
+directory with `../lib/std` (see the [main README](../../README.md)), so no
+`TURF_HOME` is needed. To use a different installation's library, add
+`"env": {"TURF_HOME": "/path/to/turf/home"}` alongside `"command"`.
 
 ## Syntax highlighting gap
 

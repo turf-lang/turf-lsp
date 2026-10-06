@@ -17,7 +17,10 @@ vim.filetype.add({ extension = { tr = 'turf' } })
 
 ## 1. `nvim-lspconfig` (most users)
 
-1. Ensure the `turf-lsp` binary is built and on your `$PATH`.
+1. Get `turf-lsp` and put it on your `$PATH`. Keep it in a `bin/` directory with
+   the standard library at `../lib/std` (the layout of a release, and of the VS
+   Code extension's `server/` directory): the server finds the library next to
+   itself, so no `TURF_HOME` is needed. See the [main README](../../README.md).
 2. Copy `turf-lsp.lua` into your config (e.g. as a Lua module), then:
    ```lua
    require('turf-lsp').setup()

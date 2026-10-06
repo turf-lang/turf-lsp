@@ -13,9 +13,11 @@ come with the extension.
   `import`, keywords and templates for the statement you are on. Type the name
   of a module you have not imported and accepting it **adds the `import`**.
 - **Signature help** while typing a call's arguments.
+- **Inlay hints**: the parameter name before each argument (`add(a: 1, b: 2)`).
 - **Hover**, **go to definition** (including into the standard library and into
   your own modules), **find references**, **rename**, **document highlights**,
-  **outline** and **document links** (Ctrl+click an `import`).
+  **outline**, **workspace symbol search** (Ctrl+T) and **document links**
+  (Ctrl+click an `import`).
 - **Quick fixes** (`Ctrl+.`): add a missing `import`, organize imports, and the
   fixes the compiler's errors suggest.
 - **Formatting** of the document or a selection, changing only the lines that

@@ -20,7 +20,10 @@ separate, unstarted effort) and attach `turf-lsp` to `.tr` files.
 (add-hook 'turf-mode-hook #'eglot-ensure)
 ```
 
-To point at a specific binary or pass `TURF_HOME`, wrap the command:
+The server finds the standard library next to itself when it sits in a `bin/`
+directory with `../lib/std` (see the [main README](../../README.md)); `TURF_HOME`
+is only for using a different installation's library. To point at a specific
+binary or pass `TURF_HOME`, wrap the command:
 ```elisp
 '(turf-mode . ("env" "TURF_HOME=/path/to/turf/home" "/path/to/turf-lsp"))
 ```

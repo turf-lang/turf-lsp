@@ -7,9 +7,10 @@ standard library are bundled, per platform, so there is nothing to install or
 configure.
 
 - Diagnostics (with lint warnings), completion (scope-aware, `module::` members,
-  import names, keywords and templates, auto-import), signature help, hover,
-  go to definition, references, rename, document highlight, outline, document
-  links, folding, semantic highlighting.
+  import names, keywords and templates, auto-import), signature help, inlay
+  hints (parameter names), hover, go to definition, references, rename, document
+  highlight, outline, workspace symbol search, document links, folding, semantic
+  highlighting.
 - Quick fixes: add a missing import, organize imports, prefix an unused variable.
 - Formatting (whole document or selection), changing only the lines that differ.
 - Projects: imports resolve through the project's package graph (`turf graph`):
