@@ -28,11 +28,13 @@ using json = nlohmann::json;
 // touches the compiler (CompilerService::analyze(), SemanticQuery over a
 // fresh/patched analysis, ResolveModuleFile()'s module-search cache) runs
 // exclusively on one dedicated worker thread, because the compiler was
-// written as a single-process batch tool: its lexer/parser cursor,
-// GlobalSymbolTable, DiagnosticEngine, and the recovery jump buffer are all
-// plain process-global mutable state with no locking of their own. Two
-// analyses running concurrently would corrupt each other; one worker owning
-// all of it serializes access without needing to touch the compiler itself.
+// written as a single-process batch tool: its lexer/parser cursor, symbol
+// tables, diagnostics and recovery jump buffer are all plain process-global
+// mutable state. turf::analyze() (the compiler's query facade) saves,
+// isolates and restores that state around each analysis and takes its own
+// lock, but module resolution (ResolveModuleFile(), ListAvailableModules())
+// and the SemanticQuery walks over an analysis's AST are outside it, so one
+// worker still owns all compiler access and keeps it serialized.
 class LSPHandler {
 public:
     LSPHandler();

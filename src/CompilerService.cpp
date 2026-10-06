@@ -1,84 +1,73 @@
 #include "CompilerService.hpp"
-#include "Lexer.h"
-#include "Parser.h"
-#include "Resolver.h"
-#include "TypeChecker.h"
-#include "Errors.h"
-#include "SymbolTable.h"
+#include "turf/Analysis.h"
 #include <cctype>
-#include <iostream>
+#include <fstream>
 #include <sstream>
-#include <cstring>
+#include <unordered_map>
 
-CompilerService::CompilerService() {
-    // Required, one-time global setup the parser depends on -- main.cpp's own
-    // entry point calls this before ever parsing anything. Without it,
-    // BinopPrecedence (a plain static std::map<int,int>) stays empty, so
-    // ParseBinOpRHS() treats every binary operator as equally (non-)
-    // precedent and stops folding an expression's operator chain far too
-    // early -- silently mis-parsing the first binary expression anywhere in
-    // the compiled source (including inside every imported stdlib module)
-    // and surfacing as a confusing, unrelated "Expected ';' after statement"
-    // several tokens downstream of the real cause. The original
-    // CompilerService never called this either; it's why imports of
-    // anything beyond the most trivial module content silently failed.
-    InitializePrecedence();
-}
+// The compiler's front end is built on process-wide globals; running it over
+// a buffer, safely, alongside whatever else the process is doing, is what the
+// compiler's query facade (turf::analyze(), include/turf/Analysis.h) exists
+// for. This file only turns its answer into the shapes the LSP layer wants.
 
-// Mirrors main.cpp's SkipToNextTopLevelBoundary() (static there, so not
-// reusable directly) -- on a parse error, resync to the next top-level
-// statement boundary instead of giving up on the rest of the file. Without
-// this, a single syntax error anywhere aborts analysis for everything after
-// it, which is unworkable for an LSP (the buffer is syntactically invalid on
-// nearly every keystroke while the user is mid-edit).
-static void skipToNextTopLevelBoundary() {
-    do {
-        if (CurTok == TOK_EOF) return;
-        getNextToken();
-    } while (g_braceDepth > 0);
-}
+CompilerService::CompilerService() = default;
 
-// Many typed errors (see e.g. ErrorsScope.h's NameError) bake ANSI color
-// escapes directly into Diag::Msg/Hint at construction time -- by design,
-// for the CLI's own terminal output (SLMIntegration.cpp strips them right
-// back out before handing error text to the SLM prompt, for the same
-// reason: they're display-only formatting, not part of the message). An
-// LSP diagnostic's `message` is plain text rendered by the editor's own UI
-// -- passing raw escape codes through would show as garbage (or silently
-// swallowed, client-dependent), never as color. Stripped here rather than
-// at the source, matching how SLMIntegration.cpp already treats this as
-// the consuming side's responsibility, not something to unwind at origin.
-static std::string stripAnsiCodes(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (size_t i = 0; i < s.size();) {
-        if (s[i] == '\x1b' && i + 1 < s.size() && s[i + 1] == '[') {
-            size_t j = i + 2;
-            while (j < s.size() && s[j] != 'm') ++j;
-            i = (j < s.size()) ? j + 1 : j;
-        } else {
-            out += s[i];
-            ++i;
-        }
+namespace {
+
+// The text of the files diagnostics point into, for widening a one-byte
+// location to the token at it. The analysed document comes from memory (it
+// is the editor's unsaved buffer, which need not match the disk); any other
+// file -- an imported module the error surfaced in -- is read from disk once
+// per analysis. The compiler's own line cache (AllSourceLines) is not an
+// option: the facade restores it, so after analyze() it holds nothing of this
+// analysis, and every squiggle would silently shrink to one byte.
+class LineSource {
+public:
+    LineSource(std::string entryPath, std::string_view entryText) : m_entryPath(std::move(entryPath)) {
+        m_files.emplace(m_entryPath, split(std::string(entryText)));
     }
-    return out;
-}
+
+    // Null when the file cannot be read.
+    const std::vector<std::string>* lines(const std::string& path) {
+        auto it = m_files.find(path);
+        if (it != m_files.end()) return &it->second;
+        std::ifstream in(path, std::ios::binary);
+        std::vector<std::string> lines;
+        if (in) {
+            std::stringstream buf;
+            buf << in.rdbuf();
+            lines = split(buf.str());
+        }
+        // An unreadable file is remembered as empty so it is not retried for
+        // each diagnostic in it.
+        return &m_files.emplace(path, std::move(lines)).first->second;
+    }
+
+private:
+    static std::vector<std::string> split(const std::string& text) {
+        std::vector<std::string> out;
+        std::istringstream in(text);
+        std::string line;
+        while (std::getline(in, line)) out.push_back(std::move(line));
+        return out;
+    }
+
+    std::string m_entryPath;
+    std::unordered_map<std::string, std::vector<std::string>> m_files;
+};
 
 // Widens a diagnostic's 1-byte point location to the span of the
 // identifier/token it points at (doc 03 P1.3) -- a whole-token squiggle
 // reads far better than a caret. The compiler doesn't carry real end-
-// columns yet (SourceLocation::EndLine/EndCol stay at their -1 sentinel),
-// so this is a best-effort scan through the already-captured source line,
-// not a real lexer re-tokenization. Falls back to 1 byte whenever there's
-// nothing identifier-shaped at the location (punctuation-only diagnostics,
-// a hand-built {0,0} sentinel, or a filename/line AllSourceLines doesn't
-// have -- e.g. a location that came from a file which failed to open).
-static int widenDiagTokenByteLen(const std::string& filename, int line, int col) {
-    auto it = AllSourceLines.find(filename);
-    if (it == AllSourceLines.end()) return 1;
-    const auto& lines = it->second;
-    if (line < 1 || static_cast<size_t>(line) > lines.size()) return 1;
-    const std::string& lineText = lines[static_cast<size_t>(line - 1)];
+// columns yet, so this is a best-effort scan through the line's text, not a
+// real lexer re-tokenization. Falls back to 1 byte whenever there's nothing
+// identifier-shaped at the location (punctuation-only diagnostics, a
+// hand-built {0,0} sentinel, or a file that could not be read).
+int widenDiagTokenByteLen(LineSource& source, const std::string& filename, int line, int col) {
+    const std::vector<std::string>* lines = source.lines(filename);
+    if (!lines) return 1;
+    if (line < 1 || static_cast<size_t>(line) > lines->size()) return 1;
+    const std::string& lineText = (*lines)[static_cast<size_t>(line - 1)];
     if (col < 1 || static_cast<size_t>(col - 1) >= lineText.size()) return 1;
 
     size_t start = static_cast<size_t>(col - 1);
@@ -90,233 +79,60 @@ static int widenDiagTokenByteLen(const std::string& filename, int line, int col)
     return static_cast<int>(end - start);
 }
 
-// Converts one compiler Diag into the LSP-shape-agnostic intermediate
-// LSPHandler needs to finish the job (doc 03): resolves the diag's own
-// (possibly-imported-module) filename, widens its point location, and
-// folds Hint into the message text (LSP has no separate "hint" field).
-static MappedDiagnostic mapDiagnostic(const DiagnosticEngine::Diag& diag, const std::string& analyzedFilename) {
+// Converts one facade diagnostic into the LSP-shape-agnostic intermediate
+// LSPHandler needs to finish the job (doc 03): resolves the diagnostic's own
+// (possibly-imported-module) filename, widens its point location, and folds
+// the hint into the message text (LSP has no separate "hint" field). The
+// facade's text is already plain: no terminal color escapes to strip.
+MappedDiagnostic mapDiagnostic(const turf::Diagnostic& diag, const std::string& analyzedFilename,
+                               LineSource& source) {
     MappedDiagnostic md;
-    md.loc.filename = !diag.Filename.empty() ? diag.Filename : analyzedFilename;
-    md.loc.line = diag.Loc.Line;
-    md.loc.col = diag.Loc.Col;
-    md.loc.byteLen = widenDiagTokenByteLen(md.loc.filename, md.loc.line, md.loc.col);
-    md.isWarning = diag.IsWarning;
+    md.loc.filename = !diag.Where.Path.empty() ? diag.Where.Path : analyzedFilename;
+    md.loc.line = static_cast<int>(diag.Where.Line);
+    md.loc.col = static_cast<int>(diag.Where.Col);
+    md.loc.byteLen = widenDiagTokenByteLen(source, md.loc.filename, md.loc.line, md.loc.col);
+    md.isWarning = diag.Level == turf::Severity::Warning;
     md.code = diag.Code;
-    md.message = stripAnsiCodes(diag.Msg);
-    if (!diag.Hint.empty()) md.message += "\nhint: " + stripAnsiCodes(diag.Hint);
+    md.message = diag.Message;
+    if (!diag.Hint.empty()) md.message += "\nhint: " + diag.Hint;
 
-    for (const auto& rel : diag.RelatedLocations) {
+    for (const auto& rel : diag.Related) {
         MappedRelatedInfo mri;
-        mri.loc.filename = !rel.Loc.Filename.empty() ? rel.Loc.Filename : md.loc.filename;
-        mri.loc.line = rel.Loc.Line;
-        mri.loc.col = rel.Loc.Col;
-        mri.loc.byteLen = widenDiagTokenByteLen(mri.loc.filename, mri.loc.line, mri.loc.col);
-        mri.description = stripAnsiCodes(rel.Description);
+        mri.loc.filename = !rel.Where.Path.empty() ? rel.Where.Path : md.loc.filename;
+        mri.loc.line = static_cast<int>(rel.Where.Line);
+        mri.loc.col = static_cast<int>(rel.Where.Col);
+        mri.loc.byteLen = widenDiagTokenByteLen(source, mri.loc.filename, mri.loc.line, mri.loc.col);
+        mri.description = rel.Message;
         md.related.push_back(std::move(mri));
     }
     return md;
 }
 
+} // namespace
+
 std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view source, std::string_view filename,
                                                              const std::function<bool()>& isCancelled) {
-    auto analysis = std::make_unique<DocumentAnalysis>();
+    // The facade runs the lexer, parser, resolver and typechecker over the
+    // buffer (never codegen, never `--smart`: the model is slow and
+    // nondeterministic, wrong for a pass that reruns on every debounced
+    // keystroke), keeps going past errors so one bad function leaves the
+    // rest usable, reports every diagnostic rather than one per line (a
+    // second genuine error on an errored line must still get its own
+    // squiggle), and leaves the process's compiler state exactly as it
+    // found it. `isCancelled` is asked at the pipeline's phase boundaries.
+    turf::AnalysisOptions options;
+    options.ShouldCancel = isCancelled;
+    // A real compile lints while generating code, which an analysis never
+    // does; without this the editor would miss the warnings `turf` prints
+    // (unused variables, unreachable code, shadowing).
+    options.RunLint = true;
 
-    DiagnosticEngine::clearDiagnostics();
-    ClearParsedTopLevelASTs();
-    resetLexer();
+    turf::AnalysisResult result = turf::analyze({{std::string(filename), std::string(source)}}, options);
+    if (result.cancelled()) return nullptr;
 
-    // Never on for the LSP (doc 03 P1.1): `--smart` SLM suggestions are
-    // slow and nondeterministic, wrong for a pass that reruns on every
-    // debounced keystroke. Forced unconditionally rather than trusted to
-    // already default false -- this is a documented contract of the LSP's
-    // analysis pass, not an assumption about whatever main.cpp's own CLI
-    // arg parsing happened to leave it at (which this binary never runs).
-    g_AIEnabled = false;
-
-    // add() caps at one primary error per source line by default (its own
-    // doc comment) -- fine for a CLI's noise reduction, wrong for an LSP:
-    // a second genuine error on an already-errored line must still surface
-    // as its own squiggle (doc 03 P1.1). Saved/restored via restoreGlobals
-    // below like every other piece of global state this function touches.
-    bool savedCollectAllDiagnostics = DiagnosticEngine::getCollectAllDiagnostics();
-    DiagnosticEngine::setCollectAllDiagnostics(true);
-    // Re-created fresh per analyze() call, not just once: struct/enum types
-    // are registered into this at PARSE time (ParseStructDecl's
-    // `GlobalSymbolTable->RegisterType(...)`, guarded on non-null -- it
-    // silently no-ops if this is never initialized at all, which is exactly
-    // what happened before this fix). TypeChecker's method-call resolution
-    // (visitMethodCall) looks a base expression's struct type up THROUGH
-    // this table, not just through ResolverSymbolTable -- without it, every
-    // struct instance method call failed with a confusing "Cannot call
-    // method '...' on type 'Point' -- only struct instances have methods.",
-    // even though the real `turf` CLI compiles the identical source cleanly
-    // (it always calls this during its own startup). Recreating it fresh
-    // each call (rather than once in the constructor) avoids a renamed/
-    // removed struct's old entry lingering forever across edits.
-    InitializeSymbolTable();
-
-    // Point the lexer directly at the buffer via SetSourceBuffer() (added
-    // for exactly this -- "an LSP's unsaved editor buffer", see its doc
-    // comment in Lexer.h / issue #232) instead of round-tripping through a
-    // real temp file on disk next to the user's source, the previous
-    // approach. gettok() only ever calls ->get()/->peek() on SourceFile, so
-    // an in-memory std::istringstream works identically to a real ifstream.
-    // sourceBuffer must outlive every SourceFile read below, so it's a local
-    // in this call frame, not a temporary.
-    std::istringstream sourceBuffer{std::string(source)};
-    std::istream* oldFile = SourceFile;
-    SetSourceBuffer(sourceBuffer);
-
-    SourceLines.clear();
-    {
-        std::istringstream lineScanner{std::string(source)};
-        std::string Line;
-        while (std::getline(lineScanner, Line)) {
-            SourceLines.push_back(Line);
-        }
-    }
-    std::string oldSourceFilename = SourceFilename;
-    // Import resolution only needs SourceFilename's PARENT DIRECTORY
-    // (relative `import`s search it -- docs/architecture/
-    // modules_and_scope_resolution.md §2.4); it no longer needs to exist on
-    // disk at all now that content comes from SetSourceBuffer() above, not
-    // from opening this path. The real filename can be used directly: no
-    // temp-file naming/fallback dance, and diagnostics/hover attribute to
-    // the real path with zero extra bookkeeping.
-    SourceFilename = std::string(filename);
-    AllSourceLines[SourceFilename] = SourceLines;
-
-    // Save/restore the recovery jump buffer and flag around this whole call
-    // so nested analyze() calls (there aren't any today, but this makes it
-    // safe) or anything else touching global compiler state can't leave it
-    // corrupted.
-    jmp_buf savedJmpBuf;
-    std::memcpy(savedJmpBuf, g_recoverJmp, sizeof(jmp_buf));
-    bool savedRecoverActive = g_recoverActive;
-
-    std::vector<std::unique_ptr<ExprAST>> ASTs;
-
-    CurLoc = {1, 0};
-    CurTok = 0;
-    getNextToken();
-
-    // Prelude auto-import -- mirrors main.cpp's runCompilerMain() exactly
-    // (same ParsePreludeImports(CurLoc) call at the same point, right after
-    // the first token is fetched). Without this, this function was the
-    // ONLY top-level-file entry point in the whole codebase that DIDN'T
-    // inject `import int; import double; import bool; import char; import
-    // strings; import array;` -- meaning ordinary code relying on a
-    // prelude-provided operator/UFCS method with no explicit import (their
-    // entire purpose) falsely failed to typecheck under the LSP while
-    // compiling fine through the real `turf` CLI. Confirmed live: hovering
-    // into a file that imports lib/std/io/net.tr (whose resolve_hostname()
-    // uses bare string `+`, relying on the `strings` prelude, exactly as
-    // designed) produced a spurious "cannot apply '+' to 'string' and
-    // 'string'" diagnostic under the LSP that `turf --typecheck` on the
-    // identical source does not produce.
-    std::vector<std::unique_ptr<ExprAST>> PreludeASTs = ParsePreludeImports(CurLoc);
-    size_t preludeCount = PreludeASTs.size();
-
-    while (CurTok != TOK_EOF) {
-        if (CurTok == ';') {
-            getNextToken();
-            continue;
-        }
-
-        g_recoverActive = true;
-        std::unique_ptr<ExprAST> AST;
-        bool parsedOk = false;
-        if (setjmp(g_recoverJmp) == 0) {
-            AST = ParseExpression();
-            parsedOk = (AST != nullptr);
-        }
-        g_recoverActive = false;
-
-        if (parsedOk) {
-            if (CurTok == ';') {
-                getNextToken();
-            }
-            ASTs.push_back(std::move(AST));
-        } else {
-            // Either ParseExpression() returned nullptr normally (it already
-            // logged its own diagnostic), or raise() longjmp'd back here --
-            // either way, resync to the next statement instead of losing the
-            // rest of the document.
-            skipToNextTopLevelBoundary();
-        }
-    }
-
-    // Prepend the prelude imports parsed above -- resolveAll()/checkAll()
-    // below need to see them for their whole two-pass hoisting to register
-    // the prelude modules' functions/operators at all; DocumentAnalysis::
-    // preludeImportCount (set just before storing analysis->asts) is what
-    // lets every LSP-facing visitor skip back over them again afterward.
-    ASTs.insert(ASTs.begin(), std::make_move_iterator(PreludeASTs.begin()),
-                std::make_move_iterator(PreludeASTs.end()));
-
-    // Restores every global this function touched. Must run on EVERY exit
-    // path, including the two cancellation checkpoints below -- an early
-    // `return nullptr` that skipped this would leave SourceFile/
-    // SourceFilename/g_recoverJmp pointed at this call's (about-to-be-
-    // destroyed) locals for whatever runs next on the worker thread.
-    auto restoreGlobals = [&]() {
-        g_recoverActive = savedRecoverActive;
-        std::memcpy(g_recoverJmp, savedJmpBuf, sizeof(jmp_buf));
-        SourceFile = oldFile;
-        SourceFilename = oldSourceFilename;
-        DiagnosticEngine::setCollectAllDiagnostics(savedCollectAllDiagnostics);
-    };
-
-    // Cancellation checkpoint (doc 01 P0.4): coarse-grained, between passes
-    // rather than mid-pass -- see the rationale on the declaration in
-    // CompilerService.hpp. Parsing itself is never cancelled mid-way: it's
-    // typically the cheapest pass and a partial AST is less useful than
-    // just letting it finish.
-    if (isCancelled && isCancelled()) {
-        restoreGlobals();
-        return nullptr;
-    }
-
-    // Resolver/TypeChecker each still recover as a single unit (matching
-    // main.cpp's own mandatory pass) -- an error deep in resolveAll()/
-    // checkAll() still longjmps out of the whole call, but every node visited
-    // before that point already has its resolved fields set, so a document
-    // whose error is at or after the cursor still yields usable symbols for
-    // everything before it.
-    auto resolver = std::make_unique<Resolver>();
-    g_recoverActive = true;
-    if (setjmp(g_recoverJmp) == 0) {
-        resolver->resolveAll(ASTs);
-    }
-    g_recoverActive = false;
-
-    if (isCancelled && isCancelled()) {
-        restoreGlobals();
-        return nullptr;
-    }
-
-    {
-        TypeChecker TC(resolver->symbolTable());
-        g_recoverActive = true;
-        if (setjmp(g_recoverJmp) == 0) {
-            TC.checkAll(ASTs);
-        }
-        g_recoverActive = false;
-    }
-
-    analysis->asts = std::move(ASTs);
-    analysis->preludeImportCount = preludeCount;
-    analysis->resolver = std::move(resolver);
-
-    restoreGlobals();
-
-    // Collect diagnostics for the caller (doc 03): mapDiagnostic() reads
-    // AllSourceLines for token-widening, which restoreGlobals() above does
-    // NOT clear (it's a persistent cross-pass cache, not per-call state --
-    // see its own doc comment in Lexer.h), so this is safe to do after.
-    for (const auto& diag : DiagnosticEngine::getDiagnostics()) {
-        analysis->diagnostics.push_back(mapDiagnostic(diag, std::string(filename)));
-    }
-
+    auto analysis = std::make_unique<DocumentAnalysis>(std::move(result));
+    LineSource lines{std::string(filename), source};
+    for (const auto& diag : analysis->result.diagnostics())
+        analysis->diagnostics.push_back(mapDiagnostic(diag, std::string(filename), lines));
     return analysis;
 }

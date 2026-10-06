@@ -1,7 +1,6 @@
 #include "SemanticQuery.hpp"
 #include "ASTVisitor.h"
 #include "Parser.h" // ListAvailableModules() -- import completion (doc 05 G2)
-#include "Resolver.h"
 #include <cctype>
 #include <cstdio>
 #include <iostream>
@@ -215,9 +214,9 @@ const ExprAST* SemanticQuery::findNodeAt(const DocumentAnalysis& analysis, int l
     // Skip the synthetic prelude imports (see DocumentAnalysis::
     // preludeImportCount's doc comment) -- they're not real source the
     // user can click on.
-    for (size_t i = analysis.preludeImportCount; i < analysis.asts.size(); ++i) {
-        if (analysis.asts[i]) {
-            const_cast<ExprAST*>(analysis.asts[i].get())->accept(visitor);
+    for (size_t i = analysis.preludeImportCount(); i < analysis.asts().size(); ++i) {
+        if (analysis.asts()[i]) {
+            const_cast<ExprAST*>(analysis.asts()[i].get())->accept(visitor);
         }
     }
     return visitor.getBestNode();
@@ -339,7 +338,7 @@ std::optional<HoverInfo> SemanticQuery::hover(const DocumentAnalysis& analysis, 
             // case this can ever see).
             std::string text;
             std::vector<const ResolverFunctionSymbol*> overloads;
-            if (analysis.resolver) overloads = analysis.resolver->symbolTable().lookupCurrentFileFunctions(fnDef->getName());
+            overloads = analysis.symbols().lookupCurrentFileFunctions(fnDef->getName());
             if (overloads.size() > 1) {
                 text = "```turf\n";
                 for (size_t i = 0; i < overloads.size(); ++i) {
@@ -486,8 +485,8 @@ std::optional<SymbolLocation> SemanticQuery::getTypeDefinitionLoc(const Document
     // preludeImportCount): walking them is harmless (no position collision
     // concern here, unlike semantic tokens), but there's nothing worth
     // finding inside them for THIS lookup either -- omitted for clarity.
-    for (size_t i = analysis.preludeImportCount; i < analysis.asts.size(); ++i) {
-        if (analysis.asts[i]) const_cast<ExprAST*>(analysis.asts[i].get())->accept(indexer);
+    for (size_t i = analysis.preludeImportCount(); i < analysis.asts().size(); ++i) {
+        if (analysis.asts()[i]) const_cast<ExprAST*>(analysis.asts()[i].get())->accept(indexer);
     }
 
     // A generic instantiation's getName() includes its type arguments
@@ -742,9 +741,9 @@ std::vector<SemanticToken> SemanticQuery::getSemanticTokens(const DocumentAnalys
     // Skip the synthetic prelude imports (DocumentAnalysis::
     // preludeImportCount) -- tokenizing them would emit up to 6 phantom
     // Namespace tokens overlapping the user's real first line.
-    for (size_t i = analysis.preludeImportCount; i < analysis.asts.size(); ++i) {
-        if (analysis.asts[i]) {
-            const_cast<ExprAST*>(analysis.asts[i].get())->accept(visitor);
+    for (size_t i = analysis.preludeImportCount(); i < analysis.asts().size(); ++i) {
+        if (analysis.asts()[i]) {
+            const_cast<ExprAST*>(analysis.asts()[i].get())->accept(visitor);
         }
     }
     
@@ -909,19 +908,19 @@ public:
 
 std::vector<ReferenceOccurrence> SemanticQuery::findAllReferenceOccurrences(const DocumentAnalysis& analysis) {
     ReferenceVisitor visitor;
-    for (size_t i = analysis.preludeImportCount; i < analysis.asts.size(); ++i) {
-        if (analysis.asts[i]) const_cast<ExprAST*>(analysis.asts[i].get())->accept(visitor);
+    for (size_t i = analysis.preludeImportCount(); i < analysis.asts().size(); ++i) {
+        if (analysis.asts()[i]) const_cast<ExprAST*>(analysis.asts()[i].get())->accept(visitor);
     }
     return std::move(visitor.occurrences);
 }
 
 std::vector<DocumentSymbolEntry> SemanticQuery::getDocumentSymbols(const DocumentAnalysis& analysis) {
     std::vector<DocumentSymbolEntry> symbols;
-    // Top-level entries only -- analysis.asts IS the file's flat top-level
+    // Top-level entries only -- analysis.asts() IS the file's flat top-level
     // declaration list, so no AST walk is needed, just a dynamic_cast per
     // entry (skips anything nested inside a function body by construction).
-    for (size_t i = analysis.preludeImportCount; i < analysis.asts.size(); ++i) {
-        const ExprAST* node = analysis.asts[i].get();
+    for (size_t i = analysis.preludeImportCount(); i < analysis.asts().size(); ++i) {
+        const ExprAST* node = analysis.asts()[i].get();
         if (!node) continue;
         if (auto structDecl = dynamic_cast<const StructDeclExprAST*>(node)) {
             symbols.push_back({structDecl->getName(), 23 /* Struct */,
@@ -1138,8 +1137,7 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
         return items;
     }
 
-    if (!analysis.resolver) return items;
-    const ResolverSymbolTable& symTable = analysis.resolver->symbolTable();
+    const ResolverSymbolTable& symTable = analysis.symbols();
 
     if (ctx.kind == TriggerContext::Kind::ScopeAccess) {
         const std::string& base = ctx.base;
@@ -1195,7 +1193,7 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
 
     if (ctx.kind == TriggerContext::Kind::MemberAccess) {
         DocumentIndexVisitor indexer;
-        for (const auto& ast : analysis.asts)
+        for (const auto& ast : analysis.asts())
             if (ast) const_cast<ExprAST*>(ast.get())->accept(indexer);
 
         auto varIt = indexer.VariableTypes.find(ctx.base);
@@ -1262,7 +1260,7 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
     items.push_back({"assert", 3, "Builtin", "assert(${1:condition}, \"${2:message}\")$0", "", "", "2assert"});
 
     DocumentIndexVisitor indexer;
-    for (const auto& ast : analysis.asts)
+    for (const auto& ast : analysis.asts())
         if (ast) const_cast<ExprAST*>(ast.get())->accept(indexer);
     for (const auto& entry : indexer.VariableTypes) {
         CompletionItem item;
@@ -1308,8 +1306,7 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
 std::optional<SymbolLocation> SemanticQuery::getFunctionDeclLoc(const DocumentAnalysis& analysis,
                                                                  const std::string& name,
                                                                  const std::string& module) {
-    if (!analysis.resolver) return std::nullopt;
-    if (auto sym = firstOverload(analysis.resolver->symbolTable(), name, module)) {
+    if (auto sym = firstOverload(analysis.symbols(), name, module)) {
         return SymbolLocation{sym->DeclLoc, module, bareNameLength(sym->BaseName)};
     }
     return std::nullopt;
@@ -1344,8 +1341,7 @@ bool SemanticQuery::isImportSymbolTrigger(const std::string& text, std::string& 
 
 std::vector<CompletionItem> SemanticQuery::getModuleExportedSymbols(const DocumentAnalysis& moduleAnalysis) {
     std::vector<CompletionItem> items;
-    if (!moduleAnalysis.resolver) return items;
-    const ResolverSymbolTable& symTable = moduleAnalysis.resolver->symbolTable();
+    const ResolverSymbolTable& symTable = moduleAnalysis.symbols();
 
     for (const auto& name : symTable.getAllCurrentFileFunctionNames()) {
         if (name.find('.') != std::string::npos) continue; // struct methods, not `mod::name`-callable directly
