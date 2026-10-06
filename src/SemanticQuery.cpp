@@ -1359,6 +1359,11 @@ std::optional<SemanticQuery::SignatureHelp> SemanticQuery::getSignatureHelp(cons
 }
 
 SemanticQuery::ImportInsertion SemanticQuery::importInsertion(const std::string& text, const std::string& module) {
+    return importStatementInsertion(text, "import " + module + ";");
+}
+
+SemanticQuery::ImportInsertion SemanticQuery::importStatementInsertion(const std::string& text,
+                                                                       const std::string& statement) {
     std::vector<std::string> lines;
     {
         std::istringstream in(text);
@@ -1369,7 +1374,6 @@ SemanticQuery::ImportInsertion SemanticQuery::importInsertion(const std::string&
         }
     }
     const bool endsWithNewline = !text.empty() && text.back() == '\n';
-    const std::string statement = "import " + module + ";";
 
     auto startsWith = [](const std::string& s, const char* prefix) { return s.rfind(prefix, 0) == 0; };
     int lastImport = -1;

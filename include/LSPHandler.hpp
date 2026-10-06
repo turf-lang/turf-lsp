@@ -118,6 +118,7 @@ private:
     void doFormatting(json id, std::string uri, bool insertSpaces, int tabSize,
                        std::shared_ptr<std::atomic<bool>> cancelFlag, int rangeStartLine = -1,
                        int rangeEndLine = -1);
+    std::optional<json> importAction(const std::string& uri, const std::string& statement, const json& diag);
     void doFoldingRange(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doDocumentLink(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doPrepareRename(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);

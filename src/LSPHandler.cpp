@@ -380,7 +380,7 @@ void LSPHandler::handleInitialize(const json& request) {
             {"foldingRangeProvider", true},
             {"documentLinkProvider", {{"resolveProvider", false}}},
             {"renameProvider", {{"prepareProvider", true}}},
-            {"codeActionProvider", {{"codeActionKinds", {"quickfix"}}}},
+            {"codeActionProvider", {{"codeActionKinds", {"quickfix", "source.organizeImports"}}}},
             {"semanticTokensProvider", {
                 {"legend", {
                     {"tokenTypes", {"variable", "function", "keyword", "type", "parameter", "struct", "string", "number", "operator", "namespace", "property", "enumMember", "method"}},
@@ -1608,16 +1608,28 @@ void LSPHandler::doCodeAction(json id, std::string uri, json diagnostics,
             // from the "import" keyword itself, not just the module::symbol
             // part) -- do NOT re-prepend "import " here, that would double it.
             if (auto importStmt = extractImportSuggestion(message)) {
-                json action = {
-                    {"title", "Add `" + *importStmt + "`"},
-                    {"kind", "quickfix"},
-                    {"diagnostics", json::array({diag})},
-                    {"edit", {{"changes", {{uri, json::array({
-                        {{"range", jsonRange({{0, 0}, {0, 0}})},
-                         {"newText", *importStmt + "\n"}}
-                    })}}}}}
-                };
-                actions.push_back(std::move(action));
+                if (auto action = importAction(uri, *importStmt, diag)) actions.push_back(std::move(*action));
+            }
+            continue;
+        }
+
+        // E031 "'io' isn't a known enum, struct, or module": the most common
+        // newcomer mistake -- `io::printline(...)` without `import io;`. When
+        // the name is a module this file can import, offer the import.
+        if (code == "E031") {
+            const std::string quote = "'";
+            size_t open = message.find(quote);
+            size_t close = open == std::string::npos ? std::string::npos : message.find(quote, open + 1);
+            if (close != std::string::npos) {
+                const std::string name = message.substr(open + 1, close - open - 1);
+                auto analysis = ensureFreshAnalysis(uri, cancelled);
+                if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+                if (analysis) {
+                    const auto& importable = analysis->result.importableModules();
+                    if (std::find(importable.begin(), importable.end(), name) != importable.end()) {
+                        if (auto action = importAction(uri, "import " + name + ";", diag)) actions.push_back(std::move(*action));
+                    }
+                }
             }
             continue;
         }
@@ -1663,7 +1675,34 @@ void LSPHandler::doCodeAction(json id, std::string uri, json diagnostics,
         }
     }
 
+    // Organize imports (sort, drop duplicates), whenever the file's imports
+    // are not already in order. A source action, not tied to a diagnostic.
+    if (auto textSnap = m_documents.getText(uri)) {
+        if (auto change = turf_lsp::organizeImports(textSnap->text)) {
+            PositionMapper mapper(textSnap->text, m_positionEncoding);
+            json edit = {{"range", jsonRange({mapper.toLspPosition(change->startByte), mapper.toLspPosition(change->endByte)})},
+                         {"newText", change->newText}};
+            actions.push_back({{"title", "Organize imports"},
+                               {"kind", "source.organizeImports"},
+                               {"edit", {{"changes", {{uri, json::array({edit})}}}}}});
+        }
+    }
+
     sendResponse(id, actions);
+}
+
+// The quick fix "Add `<statement>`": the import goes after the file's last
+// import (or after its header), not at line 0 above a leading comment.
+std::optional<json> LSPHandler::importAction(const std::string& uri, const std::string& statement, const json& diag) {
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) return std::nullopt;
+    auto at = SemanticQuery::importStatementInsertion(textSnap->text, statement);
+    json position = {{"line", at.line}, {"character", at.character}};
+    json edit = {{"range", {{"start", position}, {"end", position}}}, {"newText", at.text}};
+    return json{{"title", "Add `" + statement + "`"},
+                {"kind", "quickfix"},
+                {"diagnostics", json::array({diag})},
+                {"edit", {{"changes", {{uri, json::array({edit})}}}}}};
 }
 
 // doc 08 P3.6 (bonus): a flat outline of the current file's top-level

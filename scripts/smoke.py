@@ -775,6 +775,48 @@ def t_bad_turf_home_is_ignored(c, d):
         cl.stop()
 
 
+def t_code_action_add_missing_import(c, d):
+    """`io::printline(...)` without `import io;` is the commonest first mistake;
+    the lightbulb must offer the import, placed with the other imports."""
+    text = "// a comment\nimport math;\n\nfn main(): int {\n    io::printline(\"hi\");\n    return 0;\n}\n"
+    doc = Doc(c, d / "noimport.tr", text)
+    diags = [x for x in doc.diagnostics() if x.get("code") == "E031" and "'io'" in x["message"]]
+    check(diags, "no E031 for the missing import")
+    actions = c.result("textDocument/codeAction", {
+        "textDocument": doc.td(), "range": diags[0]["range"], "context": {"diagnostics": diags}})
+    fix = [a for a in actions if a["title"] == "Add `import io;`"]
+    check(fix, "no 'Add import io' quick fix: %r" % [a["title"] for a in actions])
+    edited = apply_edits(text, fix[0]["edit"]["changes"][doc.uri])
+    check(edited.startswith("// a comment\nimport math;\nimport io;\n"), "the import is not placed after the others:\n" + edited[:80])
+    # A name that is no module offers nothing.
+    text2 = "fn main(): int {\n    nosuchthing::f();\n    return 0;\n}\n"
+    doc2 = Doc(c, d / "noimport2.tr", text2)
+    diags2 = [x for x in doc2.diagnostics() if x.get("code") == "E031"]
+    if diags2:
+        acts = c.result("textDocument/codeAction", {"textDocument": doc2.td(), "range": diags2[0]["range"],
+                                                    "context": {"diagnostics": diags2}})
+        check(not [a for a in acts if a["title"].startswith("Add `import")], "an import is offered for a name that is no module")
+
+
+def t_code_action_organize_imports(c, d):
+    text = "import net;\nimport io;\nimport io;\n\nfn main(): int {\n    return 0;\n}\n"
+    doc = Doc(c, d / "organize.tr", text)
+    doc.diagnostics()
+    actions = c.result("textDocument/codeAction", {
+        "textDocument": doc.td(), "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
+        "context": {"diagnostics": []}})
+    org = [a for a in actions if a["kind"] == "source.organizeImports"]
+    check(org, "no organize-imports action for unsorted imports: %r" % [a["title"] for a in actions])
+    check(apply_edits(text, org[0]["edit"]["changes"][doc.uri]).startswith("import io;\nimport net;\n\nfn main"),
+          "imports not sorted and de-duplicated")
+    clean = Doc(c, d / "organized.tr", "import io;\nimport net;\n\nfn main(): int {\n    return 0;\n}\n")
+    clean.diagnostics()
+    actions = c.result("textDocument/codeAction", {
+        "textDocument": clean.td(), "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
+        "context": {"diagnostics": []}})
+    check(not [a for a in actions if a["kind"] == "source.organizeImports"], "organize offered for sorted imports")
+
+
 def t_formatting_touches_only_the_lines_that_differ(c, d):
     """Replacing the whole document moves the cursor and fills the undo
     history; the edits must be just the lines that change."""

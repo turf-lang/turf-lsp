@@ -245,6 +245,8 @@ public:
         std::string text;
     };
     static ImportInsertion importInsertion(const std::string& text, const std::string& module);
+    // The same for a complete statement (`import list::List;`).
+    static ImportInsertion importStatementInsertion(const std::string& text, const std::string& statement);
 
     // The region the cursor (a byte offset into `text`) is in, from the
     // braces before it. A purely textual scan -- it ignores braces inside
