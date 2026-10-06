@@ -8,3 +8,5 @@ editors/vscode/server/
 editors/vscode/LICENSE
 dist/
 editors/vscode/.vscode-test/
+__pycache__/
+*.pyc
