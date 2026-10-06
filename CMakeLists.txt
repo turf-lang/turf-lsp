@@ -39,9 +39,9 @@ endif()
 configure_file(${CMAKE_SOURCE_DIR}/include/Version.h.in ${CMAKE_BINARY_DIR}/generated/Version.h @ONLY)
 include_directories(${CMAKE_BINARY_DIR}/generated)
 
-# Add source files
-set(SOURCES
-    src/main.cpp
+# Everything but main(): compiled once, linked into the server and into the
+# unit tests (tests/unit_tests.cpp).
+add_library(turf_lsp_core OBJECT
     src/LSPHandler.cpp
     src/CompilerService.cpp
     src/SemanticQuery.cpp
@@ -52,9 +52,13 @@ set(SOURCES
     src/WorkspaceIndex.cpp
     src/StdlibLocator.cpp
     src/ProjectGraph.cpp
+    src/TextFeatures.cpp
 )
 
-add_executable(turf-lsp ${SOURCES})
+add_executable(turf-lsp src/main.cpp)
+add_executable(turf-lsp-tests tests/unit_tests.cpp)
+enable_testing()
+add_test(NAME unit COMMAND turf-lsp-tests)
 
 # The language server runs the compiler's front end only, never `--smart`, so
 # it does not need the local-model runtime (vendored llama.cpp). Off unless the
@@ -71,4 +75,6 @@ add_subdirectory(${TURF_LANG_DIR} turflang_build EXCLUDE_FROM_ALL)
 # Link nlohmann_json, turfcore, and the platform thread library (the
 # worker/debounce thread split -- doc 01 P0.1 -- needs std::thread's
 # underlying implementation linked explicitly on some platforms/toolchains).
-target_link_libraries(turf-lsp PRIVATE nlohmann_json::nlohmann_json turfcore Threads::Threads)
+target_link_libraries(turf_lsp_core PUBLIC nlohmann_json::nlohmann_json turfcore Threads::Threads)
+target_link_libraries(turf-lsp PRIVATE turf_lsp_core)
+target_link_libraries(turf-lsp-tests PRIVATE turf_lsp_core)

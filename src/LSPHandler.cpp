@@ -1,6 +1,7 @@
 #include "LSPHandler.hpp"
 #include "SemanticQuery.hpp"
 #include "Logger.hpp"
+#include "TextFeatures.hpp"
 #include "Formatter.h"
 #include "Parser.h"
 #include "Version.h"
@@ -315,6 +316,9 @@ void LSPHandler::dispatch(const json& msg) {
     if (method == "textDocument/references") { handleReferences(msg); return; }
     if (method == "textDocument/documentSymbol") { handleDocumentSymbol(msg); return; }
     if (method == "textDocument/formatting") { handleFormatting(msg); return; }
+    if (method == "textDocument/rangeFormatting") { handleRangeFormatting(msg); return; }
+    if (method == "textDocument/foldingRange") { handleFoldingRange(msg); return; }
+    if (method == "textDocument/documentLink") { handleDocumentLink(msg); return; }
     if (method == "textDocument/prepareRename") { handlePrepareRename(msg); return; }
     if (method == "textDocument/rename") { handleRename(msg); return; }
     if (method == "textDocument/codeAction") { handleCodeAction(msg); return; }
@@ -377,6 +381,9 @@ void LSPHandler::handleInitialize(const json& request) {
             {"referencesProvider", true},
             {"documentSymbolProvider", true},
             {"documentFormattingProvider", true},
+            {"documentRangeFormattingProvider", true},
+            {"foldingRangeProvider", true},
+            {"documentLinkProvider", {{"resolveProvider", false}}},
             {"renameProvider", {{"prepareProvider", true}}},
             {"codeActionProvider", {{"codeActionKinds", {"quickfix"}}}},
             {"semanticTokensProvider", {
@@ -663,6 +670,39 @@ void LSPHandler::handleFormatting(const json& request) {
     enqueueWork([this, id, uri, insertSpaces, tabSize, cancelFlag]() {
         doFormatting(id, uri, insertSpaces, tabSize, cancelFlag);
     });
+}
+
+void LSPHandler::handleRangeFormatting(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    auto formatOpts = params.value("options", json::object());
+    bool insertSpaces = formatOpts.value("insertSpaces", true);
+    int tabSize = formatOpts.value("tabSize", 4);
+    auto range = params.value("range", json::object());
+    int startLine = range.value("start", json::object()).value("line", 0);
+    int endLine = range.value("end", json::object()).value("line", startLine);
+
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, insertSpaces, tabSize, cancelFlag, startLine, endLine]() {
+        doFormatting(id, uri, insertSpaces, tabSize, cancelFlag, startLine, endLine);
+    });
+}
+
+void LSPHandler::handleFoldingRange(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, cancelFlag]() { doFoldingRange(id, uri, cancelFlag); });
+}
+
+void LSPHandler::handleDocumentLink(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, cancelFlag]() { doDocumentLink(id, uri, cancelFlag); });
 }
 
 void LSPHandler::handlePrepareRename(const json& request) {
@@ -1678,7 +1718,8 @@ void LSPHandler::doDocumentSymbol(json id, std::string uri, std::shared_ptr<std:
 // needed at all -- formatting is a pure function of the raw text, so
 // this doesn't even touch the worker's usual ensureFreshAnalysis() path.
 void LSPHandler::doFormatting(json id, std::string uri, bool insertSpaces, int tabSize,
-                               std::shared_ptr<std::atomic<bool>> cancelFlag) {
+                               std::shared_ptr<std::atomic<bool>> cancelFlag, int rangeStartLine,
+                               int rangeEndLine) {
     std::string idKey = id.dump();
     ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
 
@@ -1692,20 +1733,72 @@ void LSPHandler::doFormatting(json id, std::string uri, bool insertSpaces, int t
     turf::format::FormatOptions opts;
     opts.InsertSpaces = insertSpaces;
     opts.IndentWidth = tabSize > 0 ? tabSize : 4;
-    auto result = turf::format::format(textSnap->text, opts);
+    // formatChecked(): the same formatter with the guarantees `turf fmt`
+    // makes (only whitespace changed, the lexer reads the same tokens,
+    // formatting again changes nothing); a result that fails them is dropped
+    // here rather than written into the user's buffer. A source the lexer
+    // rejects is not formatted at all.
+    auto result = turf::format::formatChecked(textSnap->text, opts);
 
     if (!result.Ok || result.Text == textSnap->text) {
         sendResponse(id, json::array());
         return;
     }
 
+    // Only the lines that differ, not the whole document: replacing
+    // everything moves the user's cursor and fills the undo history.
     PositionMapper mapper(textSnap->text, m_positionEncoding);
-    LspPosition endPos = mapper.toLspPosition(textSnap->text.size());
-    json edit = {
-        {"range", jsonRange({{0, 0}, endPos})},
-        {"newText", result.Text}
-    };
-    sendResponse(id, json::array({edit}));
+    json edits = json::array();
+    for (const auto& change : turf_lsp::diffLines(textSnap->text, result.Text)) {
+        LspPosition start = mapper.toLspPosition(change.startByte);
+        LspPosition end = mapper.toLspPosition(change.endByte);
+        // Range formatting: keep a change only if it touches the lines asked
+        // for (an insertion is on the line it is inserted before).
+        if (rangeStartLine >= 0 && (end.line < rangeStartLine || start.line > rangeEndLine)) continue;
+        edits.push_back({{"range", jsonRange({start, end})}, {"newText", change.newText}});
+    }
+    sendResponse(id, edits);
+}
+
+// textDocument/foldingRange: pure text (TextFeatures), so it works on a
+// buffer that does not parse -- which is most of the time while typing.
+void LSPHandler::doFoldingRange(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+    if (cancelFlag && cancelFlag->load()) { sendError(id, -32800, "Request cancelled"); return; }
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) { sendError(id, -32801, "Content modified"); return; }
+
+    json ranges = json::array();
+    for (const auto& region : turf_lsp::foldingRegions(textSnap->text)) {
+        json r = {{"startLine", region.startLine}, {"endLine", region.endLine}};
+        if (!region.kind.empty()) r["kind"] = region.kind;
+        ranges.push_back(std::move(r));
+    }
+    sendResponse(id, ranges);
+}
+
+// textDocument/documentLink: each `import <module>` names a file, so the
+// module name becomes a link that opens it (Ctrl+click). The file is found the
+// way an import finds it -- in this file's project when it is in one.
+void LSPHandler::doDocumentLink(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+    if (cancelFlag && cancelFlag->load()) { sendError(id, -32800, "Request cancelled"); return; }
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) { sendError(id, -32801, "Content modified"); return; }
+
+    PositionMapper mapper(textSnap->text, m_positionEncoding);
+    const std::string path = uriToPath(uri);
+    json links = json::array();
+    for (const auto& import : turf_lsp::importStatements(textSnap->text)) {
+        if (cancelFlag && cancelFlag->load()) { sendError(id, -32800, "Request cancelled"); return; }
+        const std::string file = m_compiler.resolveModuleFile(import.module, path);
+        if (file.empty()) continue; // not found, or ambiguous: the diagnostics say so
+        LspRange range = mapper.toLspRange(import.line + 1, import.nameStart + 1, import.nameLength);
+        links.push_back({{"range", jsonRange(range)}, {"target", "file://" + file}, {"tooltip", "Open " + import.module}});
+    }
+    sendResponse(id, links);
 }
 
 std::vector<int> LSPHandler::computeSemanticTokenData(const DocumentAnalysis& analysis,

@@ -89,6 +89,9 @@ private:
     void handleReferences(const json& request);
     void handleDocumentSymbol(const json& request);
     void handleFormatting(const json& request);
+    void handleRangeFormatting(const json& request);
+    void handleFoldingRange(const json& request);
+    void handleDocumentLink(const json& request);
     void handlePrepareRename(const json& request);
     void handleRename(const json& request);
     void handleCodeAction(const json& request);
@@ -109,8 +112,14 @@ private:
     void doReferences(json id, std::string uri, LspPosition pos, bool includeDeclaration,
                        std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doDocumentSymbol(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    // `rangeStartLine`/`rangeEndLine` (0-based, inclusive; -1 = the whole
+    // document): textDocument/rangeFormatting asks for edits only in those
+    // lines.
     void doFormatting(json id, std::string uri, bool insertSpaces, int tabSize,
-                       std::shared_ptr<std::atomic<bool>> cancelFlag);
+                       std::shared_ptr<std::atomic<bool>> cancelFlag, int rangeStartLine = -1,
+                       int rangeEndLine = -1);
+    void doFoldingRange(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doDocumentLink(json id, std::string uri, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doPrepareRename(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doRename(json id, std::string uri, LspPosition pos, std::string newName,
                   std::shared_ptr<std::atomic<bool>> cancelFlag);

@@ -18,7 +18,10 @@ StdlibLocation locateStdlib(const StdlibEnv& env) {
     // `..` so it reads as a path a person would recognise.
     auto consider = [&](const fs::path& candidate, const std::string& how) {
         if (out.found()) return;
-        const std::string shown = candidate.lexically_normal().string();
+        // `<root>/bin/..` normalises to `<root>/`; the root reads without it.
+        fs::path normal = candidate.lexically_normal();
+        if (!normal.has_filename() && normal.has_parent_path()) normal = normal.parent_path();
+        const std::string shown = normal.string();
         out.searched.push_back(shown);
         if (hasStdlib(candidate)) {
             out.root = shown;

@@ -392,8 +392,14 @@ def t_completion_bare_word_scope(c, d):
     got = labels(items)
     for want in ("count", "helper", "main", "Point", "io", "while", "int", "true"):
         check(want in got, "bare-word completion lacks %r" % want)
-    for leaked in ("frac_div", "saw_digit", "readCount", "int_part", "list::List", "strings::StringBuilder", "sys", "list"):
+    for leaked in ("frac_div", "saw_digit", "readCount", "int_part", "list::List", "strings::StringBuilder"):
         check(leaked not in got, "bare-word completion offers %r, which is not usable here" % leaked)
+    # `sys` and `list` are modules only `io` imports. They may be offered as
+    # something to import, but never as if this file could already use them.
+    for module in ("sys", "list"):
+        for it in items:
+            if it["label"] == module:
+                check(it.get("additionalTextEdits"), "%r is offered as usable, but this file does not import it" % module)
     check(len(got) == len(set(got)), "duplicate completion labels: %r" % sorted(x for x in got if got.count(x) > 1)[:5])
     # Real symbols outrank keywords: `count` sorts before `while`.
     order = {i["label"]: i.get("sortText", i["label"]) for i in items}
@@ -751,6 +757,66 @@ def t_bad_turf_home_is_ignored(c, d):
         check(got != [], "no completion")
     finally:
         cl.stop()
+
+
+def t_formatting_touches_only_the_lines_that_differ(c, d):
+    """Replacing the whole document moves the cursor and fills the undo
+    history; the edits must be just the lines that change."""
+    text = "fn a(): int {\n    return 1;\n}\n\nfn b(): int {\nreturn 2;\n}\n\nfn c(): int {\n    return 3;\n}\n"
+    doc = Doc(c, d / "min.tr", text)
+    doc.diagnostics()
+    edits = c.result("textDocument/formatting", {"textDocument": doc.td(), "options": {"tabSize": 4, "insertSpaces": True}})
+    check(len(edits) == 1, "expected one edit for one mis-indented line, got %d: %r" % (len(edits), edits))
+    r = edits[0]["range"]
+    check(r["start"]["line"] == 5 and r["end"]["line"] == 6, "the edit does not target just line 5: %r" % r)
+    check(edits[0]["newText"] == "        return 2;\n".replace("        ", "    "), "newText: %r" % edits[0]["newText"])
+
+
+def t_range_formatting(c, d):
+    """Only the selected lines are reformatted."""
+    check(c.init["capabilities"].get("documentRangeFormattingProvider"), "documentRangeFormattingProvider is not advertised")
+    text = "fn a(): int {\nreturn 1;\n}\n\nfn b(): int {\nreturn 2;\n}\n"
+    doc = Doc(c, d / "rng.tr", text)
+    doc.diagnostics()
+    edits = c.result("textDocument/rangeFormatting", {
+        "textDocument": doc.td(), "options": {"tabSize": 4, "insertSpaces": True},
+        "range": {"start": {"line": 4, "character": 0}, "end": {"line": 6, "character": 1}}})
+    out = apply_edits(text, edits)
+    check("fn a(): int {\nreturn 1;\n}" in out, "a line outside the range was reformatted:\n" + out)
+    check("fn b(): int {\n    return 2;\n}" in out, "the selected function was not reformatted:\n" + out)
+
+
+def t_formatting_refuses_a_file_that_does_not_lex(c, d):
+    """A source the lexer rejects is not formatted -- not mangled."""
+    text = 'fn main(): int {\nmut s: string = "open;\nreturn 0;\n}\n'
+    doc = Doc(c, d / "nolex.tr", text)
+    try:
+        doc.diagnostics(timeout=10)
+    except TimeoutError:
+        pass
+    check(not c.result("textDocument/formatting", {"textDocument": doc.td(), "options": {"tabSize": 4, "insertSpaces": True}}),
+          "edits were returned for a file with a lexical error")
+
+
+def t_folding_ranges(c, d):
+    text = "// a\n// b\nimport io;\nimport json;\n\nfn main(): int {\n    if (true) {\n        return 1;\n    }\n    return 0;\n}\n"
+    doc = Doc(c, d / "fold.tr", text)
+    check(c.init["capabilities"].get("foldingRangeProvider"), "foldingRangeProvider is not advertised")
+    got = c.result("textDocument/foldingRange", {"textDocument": doc.td()})
+    have = {(r["startLine"], r["endLine"], r.get("kind", "")) for r in got}
+    for want in ((0, 1, "comment"), (2, 3, "imports"), (5, 9, ""), (6, 7, "")):
+        check(want in have, "folding range %r missing; got %r" % (want, sorted(have)))
+
+
+def t_document_links(c, d):
+    """An import's module name opens the module's file."""
+    doc = Doc(c, d / "links.tr", "import io;\nimport nosuchmodule;\n\nfn main(): int {\n    return 0;\n}\n")
+    check(c.init["capabilities"].get("documentLinkProvider"), "documentLinkProvider is not advertised")
+    links = c.result("textDocument/documentLink", {"textDocument": doc.td()})
+    check(len(links) == 1, "expected a link for io only (nosuchmodule resolves to nothing): %r" % links)
+    check(links[0]["target"].endswith("/io.tr"), "the link does not open io.tr: %r" % links[0])
+    r = links[0]["range"]
+    check(r["start"] == {"line": 0, "character": 7} and r["end"] == {"line": 0, "character": 9}, "link range: %r" % r)
 
 
 TESTS = [(n[2:], f) for n, f in sorted(globals().items()) if n.startswith("t_")]
