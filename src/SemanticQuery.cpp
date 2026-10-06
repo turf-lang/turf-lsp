@@ -1112,21 +1112,22 @@ structMethods(const ResolverSymbolTable& symTable, const std::string& structName
 
 std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis& analysis,
                                                            const std::string& lineTextBeforeCursor,
-                                                           const std::string& documentPath,
+                                                           [[maybe_unused]] const std::string& documentPath,
                                                            int cursorLine) {
     std::vector<CompletionItem> items;
 
     TriggerContext ctx = classifyTrigger(lineTextBeforeCursor);
 
-    // `import <prefix>` -- module-name completion (doc 05 G2). Answered
-    // from ListAvailableModules() (turf-lang's Parser.h), a pure filesystem
-    // lookup that needs no resolved AST at all -- unlike every other branch
-    // below, this doesn't require `analysis.resolver` to be non-null, which
-    // matters here specifically: an in-progress `import ` line (no `;` yet)
-    // is exactly the kind of buffer the patched-reanalysis path may not
-    // fully resolve.
+    // `import <prefix>` -- module-name completion (doc 05 G2). Answered from
+    // the analysis's own list of what an import here could name, which needs
+    // no resolved AST -- an in-progress `import ` line (no `;` yet) is exactly
+    // the kind of buffer the patched-reanalysis path may not fully resolve --
+    // and which follows the context the analysis ran in: in a project, the
+    // package's own modules and dependencies, not just the files next to this
+    // one. (It is the analysis's, not a fresh filesystem lookup, because the
+    // project's graph is only in force while the analysis runs.)
     if (ctx.kind == TriggerContext::Kind::Import) {
-        for (const auto& name : ListAvailableModules(documentPath)) {
+        for (const auto& name : analysis.result.importableModules()) {
             CompletionItem item;
             item.label = name;
             item.kind = 9; // Module

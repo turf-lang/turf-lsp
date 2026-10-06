@@ -110,6 +110,12 @@ MappedDiagnostic mapDiagnostic(const turf::Diagnostic& diag, const std::string& 
 
 } // namespace
 
+std::string CompilerService::resolveModuleFile(const std::string& module, const std::string& importingFile) {
+    turf::AnalysisOptions options;
+    options.PackageGraphFile = m_projects.forFile(importingFile).graphFile;
+    return turf::resolveModuleFile(module, importingFile, options);
+}
+
 std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view source, std::string_view filename,
                                                              const std::function<bool()>& isCancelled) {
     // The facade runs the lexer, parser, resolver and typechecker over the
@@ -127,11 +133,27 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
     // (unused variables, unreachable code, shadowing).
     options.RunLint = true;
 
+    // A file in a project is analysed with the project's package graph, so
+    // `import` finds its sibling modules and dependencies as `turf build`
+    // does. A graph that cannot be made is reported on the file (a manifest
+    // that does not parse is the user's to fix) and the file is analysed on
+    // its own.
+    const turf_lsp::ProjectGraph project = m_projects.forFile(std::string(filename));
+    options.PackageGraphFile = project.graphFile;
+
     turf::AnalysisResult result = turf::analyze({{std::string(filename), std::string(source)}}, options);
     if (result.cancelled()) return nullptr;
 
     auto analysis = std::make_unique<DocumentAnalysis>(std::move(result));
     LineSource lines{std::string(filename), source};
+    if (!project.problem.empty()) {
+        MappedDiagnostic md;
+        md.loc.filename = std::string(filename);
+        md.loc.line = 1;
+        md.loc.col = 1;
+        md.message = project.problem;
+        analysis->diagnostics.push_back(std::move(md));
+    }
     for (const auto& diag : analysis->result.diagnostics())
         analysis->diagnostics.push_back(mapDiagnostic(diag, std::string(filename), lines));
     return analysis;

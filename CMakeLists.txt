@@ -51,6 +51,7 @@ set(SOURCES
     src/DocumentStore.cpp
     src/WorkspaceIndex.cpp
     src/StdlibLocator.cpp
+    src/ProjectGraph.cpp
 )
 
 add_executable(turf-lsp ${SOURCES})

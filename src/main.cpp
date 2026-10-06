@@ -3,6 +3,7 @@
 #include "LSPFramer.hpp"
 #include "LSPHandler.hpp"
 #include "Logger.hpp"
+#include "ProjectGraph.hpp"
 #include "Version.h"
 #include "AST.h" // CompilerExecutablePath
 #include "llvm/Support/FileSystem.h"
@@ -88,6 +89,16 @@ int main(int argc, char** argv) {
 
     LSPHandler handler;
     handler.setStdlib(stdlib);
+
+    // `turf` gives the server a project's package graph, so imports of the
+    // project's own modules and dependencies resolve as in `turf build`.
+    // Absent is fine: files are then analysed on their own.
+    const std::string turf = turf_lsp::findTurfExecutable(CompilerExecutablePath, stdlib.root);
+    if (turf.empty())
+        Logger::warn("turf-lsp: no `turf` found next to the server or on PATH; a project's own modules and dependencies will not resolve in imports");
+    else
+        Logger::info("turf-lsp: using " + turf + " for project graphs");
+    handler.setTurfExecutable(turf);
 
     // This loop IS the I/O thread (doc 01 P0.1): it only frames messages
     // and hands them to the handler, which itself only does cheap,

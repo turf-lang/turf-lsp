@@ -420,6 +420,100 @@ class Skipped(Exception):
     pass
 
 
+MANIFEST = '[package]\nname = "%s"\nversion = "0.1.0"\nturf = "2.0"\n%s'
+
+
+def make_project(d):
+    """proj depends on dep (a path dependency); proj has src/lib/util.tr, which
+    sits in a subdirectory, so only the package graph makes `import util;` work."""
+    proj, dep = d / "proj", d / "dep"
+    for p in (proj / "src" / "lib", proj / "tests", dep / "src"):
+        p.mkdir(parents=True, exist_ok=True)
+    (proj / "turf.toml").write_text(MANIFEST % ("proj", '\n[dependencies]\ndep = { path = "../dep" }\n'))
+    (dep / "turf.toml").write_text(MANIFEST % ("dep", ""))
+    (dep / "src" / "dep.tr").write_text("pub fn answer(): int {\n    return 21;\n}\n")
+    (proj / "src" / "lib" / "util.tr").write_text("pub fn double_it(x: int): int {\n    return x * 2;\n}\n")
+    return proj
+
+
+PROJECT_MAIN = """import io;
+import util;
+import dep;
+
+fn main(): int {
+    io::printline("x");
+    return util::double_it(dep::answer());
+}
+"""
+
+
+def need_turf():
+    if H.turf is None:
+        raise Skipped("needs a `turf` binary (--turf, or --stdlib-from a checkout with build/turf)")
+
+
+def t_project_imports_resolve(c, d):
+    """A file in a `turf new` project sees its own modules (anywhere under
+    src/) and its dependencies, exactly as `turf build` does."""
+    need_turf()
+    proj = make_project(d)
+    doc = Doc(c, proj / "src" / "main.tr", PROJECT_MAIN)
+    diags = doc.diagnostics(timeout=30)
+    check(diags == [], "a valid project file has diagnostics: %s" % json.dumps(diags)[:600])
+    loc = c.result("textDocument/definition", {"textDocument": doc.td(), "position": doc.pos("double_it", offset=2)})
+    loc = loc[0] if isinstance(loc, list) else loc
+    check(loc and loc["uri"].endswith("/src/lib/util.tr"), "definition into a project module: %r" % loc)
+    got = labels(c.result("textDocument/completion", {
+        "textDocument": doc.td(), "position": doc.pos("util::double_it", offset=6),
+        "context": {"triggerKind": 2, "triggerCharacter": ":"}}))
+    check("double_it" in got, "util:: completion lacks double_it: %r" % got[:15])
+
+
+def t_project_import_names(c, d):
+    """`import <cursor>` offers the project's own modules and its dependency,
+    not just the standard library and the files next to this one."""
+    need_turf()
+    proj = make_project(d)
+    other = Doc(c, proj / "src" / "other.tr", "import \n\nfn f(): int {\n    return 0;\n}\n")
+    c.wait_for("textDocument/publishDiagnostics", lambda p: p["uri"] == other.uri, 30, other.opened_at)
+    got = labels(c.result("textDocument/completion", {
+        "textDocument": other.td(), "position": {"line": 0, "character": 7}}))
+    for want in ("util", "dep", "io", "json"):
+        check(want in got, "import completion lacks %r: %r" % (want, got[:20]))
+    check("other" not in got, "a file is offered its own name")
+
+
+def t_project_new_module(c, d):
+    """A module created while the server is running is importable by the
+    very next analysis (no restart, no stale directory listing)."""
+    need_turf()
+    proj = make_project(d)
+    doc = Doc(c, proj / "src" / "main.tr", PROJECT_MAIN)
+    check(doc.diagnostics(timeout=30) == [], "the project does not start clean")
+    (proj / "src" / "late.tr").write_text("pub fn late(): int {\n    return 7;\n}\n")
+    text = "import late;\n\nfn main(): int {\n    return late::late();\n}\n"
+    mark = c.mark()
+    c.notify("textDocument/didChange", {"textDocument": {"uri": doc.uri, "version": 2},
+                                        "contentChanges": [{"text": text}]})
+    got = c.wait_for("textDocument/publishDiagnostics", lambda p: p["uri"] == doc.uri, 30, mark)
+    check(got["diagnostics"] == [], "a module created after startup is not found: %s" % json.dumps(got["diagnostics"])[:400])
+
+
+def t_project_broken_manifest_is_reported(c, d):
+    """A turf.toml that does not parse is the user's to fix: say so on the file
+    instead of failing every import with nothing to go on."""
+    need_turf()
+    proj = d / "badproj"
+    (proj / "src").mkdir(parents=True, exist_ok=True)
+    (proj / "turf.toml").write_text("[package\nname = \n")
+    doc = Doc(c, proj / "src" / "main.tr", "fn main(): int {\n    return 0;\n}\n")
+    diags = doc.diagnostics(timeout=30)
+    check(any("turf graph failed" in x["message"] for x in diags),
+          "a broken turf.toml is not reported: %s" % json.dumps(diags)[:400])
+    syms = c.result("textDocument/documentSymbol", {"textDocument": doc.td()})
+    check("main" in json.dumps(syms), "the file is not analysed on its own after a manifest error")
+
+
 def t_version_reports_the_stdlib(c, d):
     if H.stdlib_from is None:
         raise Skipped("needs --stdlib-from")
@@ -477,8 +571,8 @@ H = None
 class Harness:
     """Where the servers under test come from, and what they run next to."""
 
-    def __init__(self, server, stdlib_from, work):
-        self.server, self.stdlib_from, self.work = server, stdlib_from, work
+    def __init__(self, server, stdlib_from, work, turf=None):
+        self.server, self.stdlib_from, self.work, self.turf = server, stdlib_from, work, turf
 
     @staticmethod
     def clean_env():
@@ -495,6 +589,8 @@ class Harness:
         (root / "bin").mkdir(parents=True)
         target = root / "bin" / self.server.name
         shutil.copy2(self.server, target)
+        if self.turf and with_stdlib:
+            shutil.copy2(self.turf, root / "bin" / self.turf.name)
         if with_stdlib:
             shutil.copytree(self.stdlib_from / "lib" / "std", root / "lib" / "std")
         return target
@@ -512,6 +608,8 @@ def main():
     ap.add_argument("--turf-home")
     ap.add_argument("--stdlib-from", help="a compiler checkout or Turf install whose lib/std is "
                     "copied next to a staged copy of the server, which then runs with TURF_HOME unset")
+    ap.add_argument("--turf", help="the `turf` command line tool to stage beside the server (default: "
+                    "build/turf in the --stdlib-from checkout, if there is one)")
     ap.add_argument("--only")
     args = ap.parse_args()
     server = pathlib.Path(args.server)
@@ -520,7 +618,11 @@ def main():
         return 1
 
     work = pathlib.Path(tempfile.mkdtemp(prefix="turf-lsp-smoke-"))
-    H = Harness(server.resolve(), pathlib.Path(args.stdlib_from).resolve() if args.stdlib_from else None, work)
+    stdlib_from = pathlib.Path(args.stdlib_from).resolve() if args.stdlib_from else None
+    turf = pathlib.Path(args.turf) if args.turf else (stdlib_from / "build" / "turf" if stdlib_from else None)
+    if turf is not None and not turf.is_file():
+        turf = None
+    H = Harness(server.resolve(), stdlib_from, work, turf.resolve() if turf else None)
     if args.stdlib_from and not (H.stdlib_from / "lib" / "std").is_dir():
         print("FAIL: %s has no lib/std" % args.stdlib_from)
         return 1

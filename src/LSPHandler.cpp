@@ -932,7 +932,7 @@ void LSPHandler::doHover(json id, std::string uri, LspPosition pos, std::shared_
                     docComment = readLeadingDocComment(splitLines(textSnap->text), declLocOpt->loc.Line);
                 } else {
                     std::string docPath = uriToPath(uri);
-                    std::string resolved = ResolveModuleFile(declLocOpt->moduleName, docPath);
+                    std::string resolved = m_compiler.resolveModuleFile(declLocOpt->moduleName, docPath);
                     if (!resolved.empty()) {
                         std::ifstream targetFile(resolved);
                         if (targetFile) {
@@ -990,7 +990,7 @@ void LSPHandler::doDefinition(json id, std::string uri, LspPosition pos, std::sh
             // location at all rather than point at the wrong file/line.
             if (!declLocOpt->moduleName.empty()) {
                 std::string docPath = uriToPath(uri);
-                std::string resolved = ResolveModuleFile(declLocOpt->moduleName, docPath);
+                std::string resolved = m_compiler.resolveModuleFile(declLocOpt->moduleName, docPath);
                 if (!resolved.empty()) {
                     targetUri = "file://" + resolved;
                 } else {
@@ -1067,7 +1067,7 @@ void LSPHandler::doTypeDefinition(json id, std::string uri, LspPosition pos, std
             // identical comment above for the stdlib-subfolder rationale.
             if (!typeLocOpt->moduleName.empty()) {
                 std::string docPath = uriToPath(uri);
-                std::string resolved = ResolveModuleFile(typeLocOpt->moduleName, docPath);
+                std::string resolved = m_compiler.resolveModuleFile(typeLocOpt->moduleName, docPath);
                 if (!resolved.empty()) {
                     targetUri = "file://" + resolved;
                 } else {
@@ -1181,7 +1181,7 @@ std::optional<std::vector<LSPHandler::FoundOccurrence>> LSPHandler::collectWorks
     // avoids).
     std::string docPath = uriToPath(uri);
     std::string targetFilePath = target->moduleName.empty() ? docPath
-                                                              : ResolveModuleFile(target->moduleName, docPath);
+                                                              : m_compiler.resolveModuleFile(target->moduleName, docPath);
     if (targetFilePath.empty()) return std::nullopt;
 
     // Scan candidates: every workspace-indexed file, plus the target's own
@@ -1236,7 +1236,7 @@ std::optional<std::vector<LSPHandler::FoundOccurrence>> LSPHandler::collectWorks
         for (const auto& occ : occurrences) {
             if (occ.declLoc.Line != target->loc.Line || occ.declLoc.Col != target->loc.Col) continue;
             std::string occDeclFilePath = occ.declModule.empty() ? candidatePath
-                                                                   : ResolveModuleFile(occ.declModule, candidatePath);
+                                                                   : m_compiler.resolveModuleFile(occ.declModule, candidatePath);
             if (occDeclFilePath != targetFilePath) continue;
 
             results.push_back({candidateUri, occ.loc, occ.length, occ.isDeclaration});
@@ -1351,7 +1351,7 @@ void LSPHandler::doPrepareRename(json id, std::string uri, LspPosition pos,
             std::string docPath = uriToPath(uri);
             std::string targetFilePath = target->moduleName.empty()
                                               ? docPath
-                                              : ResolveModuleFile(target->moduleName, docPath);
+                                              : m_compiler.resolveModuleFile(target->moduleName, docPath);
             if (!targetFilePath.empty() && !IsLibStdWarningLocation(targetFilePath)) {
                 if (auto info = SemanticQuery::hover(*analysis, node, compLine, compCol)) {
                     if (info->length > 0) {
@@ -1412,7 +1412,7 @@ void LSPHandler::doRename(json id, std::string uri, LspPosition pos, std::string
         if (!target || target->loc.Line <= 0) { sendResponse(id, nullptr); return; }
         std::string docPath = uriToPath(uri);
         std::string targetFilePath = target->moduleName.empty() ? docPath
-                                                                  : ResolveModuleFile(target->moduleName, docPath);
+                                                                  : m_compiler.resolveModuleFile(target->moduleName, docPath);
         if (targetFilePath.empty() || IsLibStdWarningLocation(targetFilePath)) {
             sendError(id, -32602, "Renaming a standard-library symbol isn't supported");
             return;
@@ -1786,7 +1786,7 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
         std::string importSymbolModule;
         if (SemanticQuery::isImportSymbolTrigger(prefixText, importSymbolModule)) {
             std::vector<CompletionItem> completions;
-            std::string resolved = ResolveModuleFile(importSymbolModule, uriToPath(uri));
+            std::string resolved = m_compiler.resolveModuleFile(importSymbolModule, uriToPath(uri));
             if (!resolved.empty()) {
                 std::ifstream targetFile(resolved);
                 if (targetFile) {
@@ -1921,7 +1921,7 @@ void LSPHandler::doCompletionResolve(json id, json item, std::shared_ptr<std::at
         auto textSnap = m_documents.getText(uri);
         if (textSnap) docComment = readLeadingDocComment(splitLines(textSnap->text), declLocOpt->loc.Line);
     } else {
-        std::string resolved = ResolveModuleFile(module, uriToPath(uri));
+        std::string resolved = m_compiler.resolveModuleFile(module, uriToPath(uri));
         if (!resolved.empty()) {
             std::ifstream targetFile(resolved);
             if (targetFile) {

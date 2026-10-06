@@ -52,6 +52,10 @@ public:
     // something a diagnostic on line 1 explains well.
     void setStdlib(turf_lsp::StdlibLocation location) { m_stdlib = std::move(location); }
 
+    // Where `turf` is (see ProjectGraph.hpp); empty analyses every file alone.
+    // Call before the first message: the worker thread owns it afterwards.
+    void setTurfExecutable(std::string turfExe) { m_compiler.setTurfExecutable(std::move(turfExe)); }
+
 private:
     turf_lsp::StdlibLocation m_stdlib;
 
