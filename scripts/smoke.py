@@ -457,6 +457,62 @@ def t_completion_snippets_parse(c, d):
     check(seen >= 12, "only %d snippets were checked; the server offers fewer than expected" % seen)
 
 
+def signature_at(c, d, name, text, marker, offset):
+    doc = Doc(c, d / name, text)
+    try:
+        doc.diagnostics(timeout=20)
+    except TimeoutError:
+        pass
+    return c.result("textDocument/signatureHelp", {"textDocument": doc.td(), "position": doc.pos(marker, offset=offset)})
+
+
+SIGNATURE_SRC = """import io;
+
+struct Point {
+    x: int,
+}
+
+fn Point.scaled(factor: int, offset: int): int {
+    return self.x * factor + offset;
+}
+
+fn add(a: int, b: int): int {
+    return a + b;
+}
+
+fn main(): int {
+    mut p: Point = Point::default();
+    mut r: int = add(1, 2);
+    io::printline("x");
+    r = p.scaled(2, 3);
+    return r;
+}
+"""
+
+
+def t_signature_help(c, d):
+    """Typing a call's arguments shows its parameters and which one is next."""
+    check(c.init["capabilities"].get("signatureHelpProvider"), "signatureHelpProvider is not advertised")
+    # Cursor just after `add(` and just after the comma: parameter 0, then 1.
+    sig = signature_at(c, d, "sig1.tr", SIGNATURE_SRC, "add(1, 2)", 4)
+    check(sig and sig["signatures"], "no signature help inside add(...): %r" % sig)
+    check(sig["signatures"][0]["label"].startswith("add(int a, int b)"), "label: %r" % sig["signatures"][0]["label"])
+    check(sig["activeParameter"] == 0, "active parameter after '(' is %r" % sig["activeParameter"])
+    sig = signature_at(c, d, "sig2.tr", SIGNATURE_SRC, "add(1, 2)", 7)
+    check(sig["activeParameter"] == 1, "active parameter after the comma is %r" % sig["activeParameter"])
+    check([p["label"] for p in sig["signatures"][0]["parameters"]] == ["int a", "int b"], "parameters: %r" % sig["signatures"][0])
+    # A method called on a value: `self` is the receiver, not an argument.
+    sig = signature_at(c, d, "sig3.tr", SIGNATURE_SRC, "scaled(2, 3)", 10)
+    check(sig and [p["label"] for p in sig["signatures"][0]["parameters"]] == ["int factor", "int offset"],
+          "method parameters should omit self: %r" % sig)
+    check(sig["activeParameter"] == 1, "method active parameter %r" % sig["activeParameter"])
+    # A module function.
+    sig = signature_at(c, d, "sig4.tr", SIGNATURE_SRC, 'printline("x")', 10)
+    check(sig and sig["signatures"][0]["label"].startswith("printline("), "module function: %r" % sig)
+    # Outside any call there is nothing to show.
+    check(signature_at(c, d, "sig5.tr", SIGNATURE_SRC, "return r;", 3) is None, "signature help outside a call")
+
+
 def t_document_symbols(c, d):
     doc = Doc(c, d / "sym.tr", FEATURES)
     doc.diagnostics()

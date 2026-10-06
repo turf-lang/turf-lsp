@@ -307,6 +307,7 @@ void LSPHandler::dispatch(const json& msg) {
     if (method == "textDocument/completion") { handleCompletion(msg); return; }
     if (method == "completionItem/resolve") { handleCompletionResolve(msg); return; }
     if (method == "textDocument/hover") { handleHover(msg); return; }
+    if (method == "textDocument/signatureHelp") { handleSignatureHelp(msg); return; }
     if (method == "textDocument/definition") { handleDefinition(msg); return; }
     if (method == "textDocument/declaration") { handleDeclaration(msg); return; }
     if (method == "textDocument/typeDefinition") { handleTypeDefinition(msg); return; }
@@ -368,6 +369,7 @@ void LSPHandler::handleInitialize(const json& request) {
                 {"save", {{"includeText", false}}}
             }},
             {"hoverProvider", true},
+            {"signatureHelpProvider", {{"triggerCharacters", {"(", ","}}, {"retriggerCharacters", {","}}}},
             {"definitionProvider", true},
             {"declarationProvider", true},
             {"typeDefinitionProvider", true},
@@ -566,6 +568,17 @@ void LSPHandler::handleHover(const json& request) {
 
     auto cancelFlag = registerCancellable(id);
     enqueueWork([this, id, uri, pos, cancelFlag]() { doHover(id, uri, pos, cancelFlag); });
+}
+
+void LSPHandler::handleSignatureHelp(const json& request) {
+    json id = request.value("id", json(nullptr));
+    auto params = request.value("params", json::object());
+    std::string uri = params.value("textDocument", json::object()).value("uri", "");
+    auto position = params.value("position", json::object());
+    LspPosition pos{position.value("line", 0), position.value("character", 0)};
+
+    auto cancelFlag = registerCancellable(id);
+    enqueueWork([this, id, uri, pos, cancelFlag]() { doSignatureHelp(id, uri, pos, cancelFlag); });
 }
 
 void LSPHandler::handleDefinition(const json& request) {
@@ -899,6 +912,42 @@ void LSPHandler::doPublishDiagnostics(std::string uri) {
             {"params", {{"uri", staleUri}, {"diagnostics", json::array()}}}
         });
     }
+}
+
+// textDocument/signatureHelp: the parameters of the function whose argument
+// list the cursor is in. The call is unfinished text, so it is found from the
+// text (SemanticQuery::getSignatureHelp) and the callee is then resolved
+// against the analysis -- the cached one, since functions are registered from
+// their own top-level declarations and a half-typed call elsewhere does not
+// change them.
+void LSPHandler::doSignatureHelp(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag) {
+    std::string idKey = id.dump();
+    ScopeExit cleanup{[this, idKey] { unregisterCancellable(idKey); }};
+
+    auto cancelled = [&cancelFlag] { return cancelFlag && cancelFlag->load(); };
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!m_documents.contains(uri)) { sendError(id, -32801, "Content modified"); return; }
+
+    auto analysis = ensureFreshAnalysis(uri, cancelled);
+    if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
+    if (!analysis) { sendResponse(id, nullptr); return; }
+
+    auto textSnap = m_documents.getText(uri);
+    if (!textSnap) { sendError(id, -32801, "Content modified"); return; }
+
+    PositionMapper mapper(textSnap->text, m_positionEncoding);
+    auto help = SemanticQuery::getSignatureHelp(*analysis, textSnap->text, mapper.toByteOffset(pos));
+    if (!help) { sendResponse(id, nullptr); return; }
+
+    json signatures = json::array();
+    for (const auto& sig : help->signatures) {
+        json parameters = json::array();
+        for (const auto& p : sig.params) parameters.push_back({{"label", p}});
+        signatures.push_back({{"label", sig.label}, {"parameters", parameters}});
+    }
+    sendResponse(id, {{"signatures", signatures},
+                      {"activeSignature", help->activeSignature},
+                      {"activeParameter", help->activeParameter}});
 }
 
 void LSPHandler::doHover(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag) {

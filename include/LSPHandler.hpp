@@ -77,6 +77,7 @@ private:
     void handleCompletion(const json& request);
     void handleCompletionResolve(const json& request);
     void handleHover(const json& request);
+    void handleSignatureHelp(const json& request);
     void handleDefinition(const json& request);
     // `declaration` reuses doDefinition() verbatim as its work body -- for
     // turf-lang, declaration and definition coincide for every symbol kind
@@ -101,6 +102,7 @@ private:
     // doCompletion() attached to the item being resolved.
     void doCompletionResolve(json id, json item, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doHover(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
+    void doSignatureHelp(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doDefinition(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doTypeDefinition(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);
     void doDocumentHighlight(json id, std::string uri, LspPosition pos, std::shared_ptr<std::atomic<bool>> cancelFlag);

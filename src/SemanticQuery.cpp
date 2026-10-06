@@ -1221,6 +1221,143 @@ void appendSnippetItems(std::vector<CompletionItem>& items, CompletionRegion reg
 
 } // namespace
 
+// ── Signature help ──────────────────────────────────────────────────────────
+
+namespace {
+
+struct CallSite {
+    std::string callee;   // as written: `add`, `io::printline`, `p.sum`, `Point::new`
+    int activeParam = 0;  // how many commas of this call's arguments precede the cursor
+};
+
+// The innermost call whose argument list the cursor is in, found by scanning
+// the text from the start -- ignoring strings, character literals and `//`
+// comments -- and remembering each unclosed `(`, `[` or `{` with the commas
+// seen at its own level. A `(` that follows an identifier is a call; one that
+// does not (`(a + b)`) is grouping and is skipped.
+std::optional<CallSite> findCallSite(const std::string& text, size_t byteOffset) {
+    struct Open { char ch; size_t at; int commas; };
+    std::vector<Open> stack;
+    const size_t end = std::min(byteOffset, text.size());
+    for (size_t i = 0; i < end; ++i) {
+        const char ch = text[i];
+        if (ch == '/' && i + 1 < end && text[i + 1] == '/') {
+            while (i < end && text[i] != '\n') ++i;
+            continue;
+        }
+        if (ch == '"' || ch == '\'') {
+            ++i;
+            while (i < end && text[i] != ch) { if (text[i] == '\\') ++i; ++i; }
+            continue;
+        }
+        switch (ch) {
+        case '(': case '[': case '{': stack.push_back({ch, i, 0}); break;
+        case ')': case ']': case '}': if (!stack.empty()) stack.pop_back(); break;
+        case ',': if (!stack.empty()) ++stack.back().commas; break;
+        case ';':
+            // A statement ended, so a `(` or `[` still open in this block was
+            // never closed (half-typed text); it is not around the cursor.
+            while (!stack.empty() && stack.back().ch != '{') stack.pop_back();
+            break;
+        default: break;
+        }
+    }
+    for (size_t k = stack.size(); k-- > 0;) {
+        if (stack[k].ch == '{') break;       // a block is not an argument list
+        if (stack[k].ch != '(') continue;
+        size_t stop = stack[k].at;
+        while (stop > 0 && text[stop - 1] == ' ') --stop;
+        size_t start = stop;
+        while (start > 0 && (isIdentChar(text[start - 1]) || text[start - 1] == ':' || text[start - 1] == '.')) --start;
+        if (start == stop) continue;         // `(a + b)`: grouping, look further out
+        return CallSite{text.substr(start, stop - start), stack[k].commas};
+    }
+    return std::nullopt;
+}
+
+// "Type name" for each parameter, as signature() spells them; `self` is
+// dropped for a call written `value.method(...)`, where it is the receiver.
+SemanticQuery::SignatureInfo describeSignature(const ResolverFunctionSymbol& sym, bool dropSelf) {
+    SemanticQuery::SignatureInfo info;
+    std::string name = sym.BaseName;
+    if (auto dot = name.rfind('.'); dot != std::string::npos) name = name.substr(dot + 1);
+    std::string label = name + "(";
+    bool first = true;
+    for (size_t i = 0; i < sym.Params.size(); ++i) {
+        if (dropSelf && i == 0 && sym.Params[i].Name == "self") continue;
+        std::string p = (sym.Params[i].Type ? sym.Params[i].Type->getName() : std::string("?"));
+        if (!sym.Params[i].Name.empty()) p += " " + sym.Params[i].Name;
+        if (!first) label += ", ";
+        first = false;
+        label += p;
+        info.params.push_back(std::move(p));
+    }
+    label += ") -> " + (sym.ReturnType ? sym.ReturnType->getName() : std::string("void"));
+    info.label = std::move(label);
+    return info;
+}
+
+// Every overload registered under `name` in `ownerModule` (the current file if
+// empty), restricted to what another module may call.
+std::vector<const ResolverFunctionSymbol*> overloadsOf(const ResolverSymbolTable& symTable, const std::string& name,
+                                                       const std::string& ownerModule) {
+    std::vector<const ResolverFunctionSymbol*> out;
+    if (ownerModule.empty()) {
+        out = symTable.lookupCurrentFileFunctions(name);
+    } else {
+        for (const auto& match : symTable.findInModules(name))
+            if (match.ModuleName == ownerModule && match.Symbol && match.Symbol->IsPublic) out.push_back(match.Symbol);
+    }
+    return out;
+}
+
+} // namespace
+
+std::optional<SemanticQuery::SignatureHelp> SemanticQuery::getSignatureHelp(const DocumentAnalysis& analysis,
+                                                                           const std::string& text,
+                                                                           size_t byteOffset) {
+    auto site = findCallSite(text, byteOffset);
+    if (!site) return std::nullopt;
+
+    const ResolverSymbolTable& symTable = analysis.symbols();
+    std::vector<const ResolverFunctionSymbol*> overloads;
+    bool dropSelf = false;
+
+    if (auto sep = site->callee.rfind("::"); sep != std::string::npos) {
+        const std::string base = site->callee.substr(0, sep), name = site->callee.substr(sep + 2);
+        if (symTable.hasModule(base)) {
+            overloads = overloadsOf(symTable, name, base);
+        } else if (symTable.isKnownStruct(base)) {
+            overloads = overloadsOf(symTable, base + "." + name, symTable.getTypeOwningModule(base));
+        }
+    } else if (auto dot = site->callee.rfind('.'); dot != std::string::npos) {
+        const std::string receiver = site->callee.substr(0, dot), name = site->callee.substr(dot + 1);
+        DocumentIndexVisitor indexer;
+        for (const auto& ast : analysis.asts())
+            if (ast) const_cast<ExprAST*>(ast.get())->accept(indexer);
+        if (auto it = indexer.VariableTypes.find(receiver); it != indexer.VariableTypes.end() && it->second) {
+            const std::string structName = it->second->getName();
+            overloads = overloadsOf(symTable, structName + "." + name, symTable.getTypeOwningModule(structName));
+            dropSelf = true;
+        }
+    } else {
+        overloads = overloadsOf(symTable, site->callee, "");
+    }
+    if (overloads.empty()) return std::nullopt;
+
+    SignatureHelp help;
+    help.activeParameter = site->activeParam;
+    for (const auto* overload : overloads) help.signatures.push_back(describeSignature(*overload, dropSelf));
+    // The first overload with room for the argument being typed.
+    for (size_t i = 0; i < help.signatures.size(); ++i) {
+        if (static_cast<int>(help.signatures[i].params.size()) > site->activeParam) {
+            help.activeSignature = static_cast<int>(i);
+            break;
+        }
+    }
+    return help;
+}
+
 CompletionRegion SemanticQuery::regionAt(const std::string& text, size_t byteOffset) {
     std::vector<char> blocks; // 'T' a struct/enum body, 'F' anything else (a function body, a nested block)
     std::string header;       // the text since the last `;`, `{` or `}`: what the next `{` opens

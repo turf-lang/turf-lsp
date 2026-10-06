@@ -210,6 +210,26 @@ public:
     // symbol table and AST -- real module functions/types after `io::`, real
     // struct fields/methods after `instance.`, real in-scope
     // variables/functions for a bare word, instead of a fixed keyword list.
+    // Signature help (textDocument/signatureHelp): the function or method
+    // whose argument list the cursor (a byte offset into `text`) is inside,
+    // with the parameter being typed. The call is found from the text, not
+    // from the AST, because the call is unfinished -- `add(1, ` is not a
+    // statement any parser accepts -- and the callee is then resolved against
+    // the analysis's symbols. One entry per overload; the active one is the
+    // first that has room for the argument being typed. nullopt when the
+    // cursor is not inside a call or the callee resolves to nothing.
+    struct SignatureInfo {
+        std::string label;                // e.g. "add(int a, int b) -> int"
+        std::vector<std::string> params;  // each one a substring of `label`
+    };
+    struct SignatureHelp {
+        std::vector<SignatureInfo> signatures;
+        int activeSignature = 0;
+        int activeParameter = 0;
+    };
+    static std::optional<SignatureHelp> getSignatureHelp(const DocumentAnalysis& analysis,
+                                                         const std::string& text, size_t byteOffset);
+
     // The region the cursor (a byte offset into `text`) is in, from the
     // braces before it. A purely textual scan -- it ignores braces inside
     // strings, character literals and `//` comments -- because it must work
