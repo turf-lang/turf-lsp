@@ -1,0 +1,65 @@
+name: Release
+
+# Pushing a tag `vX.Y.Z` builds and tests the extension for every platform
+# (build.yml), attaches the .vsix files to a GitHub release, and publishes them
+# to the registries for which a token has been configured as a repository
+# secret. Without a token nothing is published there, and nothing fails:
+#   VSCE_PAT  the Visual Studio Marketplace (VS Code)
+#   OVSX_PAT  Open VSX (VSCodium, Cursor, Windsurf, Gitpod, ...)
+# The tag must match the extension's version (editors/vscode/package.json).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          merge-multiple: true
+          path: dist
+
+      - name: The tag matches the extension's version
+        run: |
+          version=$(node -p "require('./editors/vscode/package.json').version")
+          if [ "refs/tags/v$version" != "$GITHUB_REF" ]; then
+            echo "::error::tag $GITHUB_REF does not match the extension version $version"
+            exit 1
+          fi
+          ls -l dist
+
+      - name: GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.vsix
+          generate_release_notes: true
+
+      - name: Publish to the Visual Studio Marketplace
+        if: env.VSCE_PAT != ''
+        run: npx --yes @vscode/vsce publish --packagePath dist/*.vsix
+
+      - name: Publish to Open VSX
+        if: env.OVSX_PAT != ''
+        run: |
+          for vsix in dist/*.vsix; do
+            npx --yes ovsx publish "$vsix" -p "$OVSX_PAT"
+          done

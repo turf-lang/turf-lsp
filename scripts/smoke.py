@@ -28,7 +28,7 @@ import tempfile
 import threading
 import time
 import traceback
-import urllib.parse
+
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -157,8 +157,16 @@ class Client:
         self.log.close()
 
 
+def put(path, text):
+    """Write a fixture exactly: UTF-8, and no newline translation (Windows would
+    otherwise turn every \\n into \\r\\n and use a legacy code page)."""
+    pathlib.Path(path).write_bytes(text.encode("utf-8"))
+
+
 def uri_of(path):
-    return "file://" + urllib.parse.quote(str(path))
+    # as_uri() makes a proper file URI on every platform: percent-encoded, and
+    # `file:///C:/...` for a Windows drive path (quote() would not).
+    return pathlib.Path(path).resolve().as_uri()
 
 
 class Doc:
@@ -168,7 +176,7 @@ class Doc:
         self.client, self.path, self.text, self.version = client, path, text, 1
         self.uri = uri_of(path)
         if save:  # False: the editor has it open with edits that are not on disk
-            pathlib.Path(path).write_text(text)
+            put(path, text)
         mark = client.mark()
         client.notify("textDocument/didOpen", {"textDocument": {
             "uri": self.uri, "languageId": "turf", "version": 1, "text": text}})
@@ -610,10 +618,10 @@ def make_project(d, dirname="proj"):
     proj, dep = d / dirname, d / "dep"
     for p in (proj / "src" / "lib", proj / "tests", dep / "src"):
         p.mkdir(parents=True, exist_ok=True)
-    (proj / "turf.toml").write_text(MANIFEST % ("proj", '\n[dependencies]\ndep = { path = "../dep" }\n'))
-    (dep / "turf.toml").write_text(MANIFEST % ("dep", ""))
-    (dep / "src" / "dep.tr").write_text("pub fn answer(): int {\n    return 21;\n}\n")
-    (proj / "src" / "lib" / "util.tr").write_text(
+    put(proj / "turf.toml", MANIFEST % ("proj", '\n[dependencies]\ndep = { path = "../dep" }\n'))
+    put(dep / "turf.toml", MANIFEST % ("dep", ""))
+    put(dep / "src" / "dep.tr", "pub fn answer(): int {\n    return 21;\n}\n")
+    put(proj / "src" / "lib" / "util.tr",
         "pub fn double_it(x: int): int {\n    return x * 2;\n}\n\n"
         "fn hidden_helper(): int {\n    return 0;\n}\n")  # private: not for other modules
     return proj
@@ -669,6 +677,38 @@ def t_paths_with_spaces_and_unicode(c, d):
           "definition does not return a properly encoded URI: %r" % loc)
 
 
+def decode_tokens(data, legend):
+    """(line, column, length, type name) for each semantic token."""
+    out, line, col = [], 0, 0
+    for i in range(0, len(data), 5):
+        dl, dc, length, kind, _mods = data[i:i + 5]
+        line += dl
+        col = dc if dl else col + dc
+        out.append((line, col, length, legend[kind]))
+    return out
+
+
+def t_semantic_tokens_dependency_module(c, d):
+    """A dependency's module is `dep/dep` inside the compiler; the editor must
+    colour what is written (`dep`, 3 wide), not that, or the tokens overlap and
+    the editor discards them."""
+    need_turf()
+    proj = make_project(d, "tokproj")
+    doc = Doc(c, proj / "src" / "main.tr", PROJECT_MAIN)
+    check(doc.diagnostics(timeout=30) == [], "the project does not start clean")
+    legend = c.init["capabilities"]["semanticTokensProvider"]["legend"]["tokenTypes"]
+    toks = decode_tokens(c.result("textDocument/semanticTokens/full", {"textDocument": doc.td()})["data"], legend)
+    for a, b in zip(toks, toks[1:]):
+        check(not (a[0] == b[0] and b[1] < a[1] + a[2]), "overlapping tokens %r and %r" % (a, b))
+    lines = PROJECT_MAIN.split("\n")
+    row = next(i for i, l in enumerate(lines) if "dep::answer" in l)
+    col = lines[row].index("dep::answer")
+    dep = [t for t in toks if t[0] == row and t[1] == col]
+    check(dep and dep[0][2] == 3 and dep[0][3] == "namespace", "the token for `dep` is %r, want a 3-wide namespace" % (dep,))
+    hover = c.result("textDocument/hover", {"textDocument": doc.td(), "position": {"line": row, "character": col + 1}})
+    check(hover and "module `dep`" in json.dumps(hover) and "dep/dep" not in json.dumps(hover), "hover shows %r" % (hover,))
+
+
 def t_project_import_names(c, d):
     """`import <cursor>` offers the project's own modules and its dependency,
     not just the standard library and the files next to this one."""
@@ -690,7 +730,7 @@ def t_project_new_module(c, d):
     proj = make_project(d)
     doc = Doc(c, proj / "src" / "main.tr", PROJECT_MAIN)
     check(doc.diagnostics(timeout=30) == [], "the project does not start clean")
-    (proj / "src" / "late.tr").write_text("pub fn late(): int {\n    return 7;\n}\n")
+    put(proj / "src" / "late.tr", "pub fn late(): int {\n    return 7;\n}\n")
     text = "import late;\n\nfn main(): int {\n    return late::late();\n}\n"
     mark = c.mark()
     c.notify("textDocument/didChange", {"textDocument": {"uri": doc.uri, "version": 2},
@@ -719,7 +759,7 @@ def t_project_broken_manifest_is_reported(c, d):
     need_turf()
     proj = d / "badproj"
     (proj / "src").mkdir(parents=True, exist_ok=True)
-    (proj / "turf.toml").write_text("[package\nname = \n")
+    put(proj / "turf.toml", "[package\nname = \n")
     doc = Doc(c, proj / "src" / "main.tr", "fn main(): int {\n    return 0;\n}\n")
     diags = doc.diagnostics(timeout=30)
     check(any("turf graph failed" in x["message"] for x in diags),
@@ -765,10 +805,10 @@ def t_manifest_change_refreshes_diagnostics(c, d):
     proj = d / "refresh"
     (proj / "src").mkdir(parents=True, exist_ok=True)
     manifest = proj / "turf.toml"
-    manifest.write_text("[package\nbroken\n")
+    put(manifest, "[package\nbroken\n")
     doc = Doc(c, proj / "src" / "main.tr", "fn main(): int {\n    return 0;\n}\n")
     check(any("turf graph failed" in x["message"] for x in doc.diagnostics(timeout=30)), "the broken manifest is not reported")
-    manifest.write_text(MANIFEST % ("refresh", ""))
+    put(manifest, MANIFEST % ("refresh", ""))
     mark = c.mark()
     c.notify("workspace/didChangeWatchedFiles", {"changes": [{"uri": uri_of(manifest), "type": 2}]})
     got = c.wait_for("textDocument/publishDiagnostics", lambda p: p["uri"] == doc.uri, 30, mark)

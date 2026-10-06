@@ -1,0 +1,13 @@
+# What does NOT go into the .vsix. The server (server/) and the compiled
+# extension (out/) do; the sources and the build machinery do not.
+.vscode/**
+.vscode-test/**
+src/**
+out/test/**
+**/*.map
+tsconfig.json
+*.vsix
+scripts/**
+node_modules/.bin/**
+node_modules/typescript/**
+node_modules/@types/**

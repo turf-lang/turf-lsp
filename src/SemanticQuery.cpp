@@ -11,6 +11,17 @@
 #include <unordered_map>
 #include <utility>
 
+// A module's name as the AST records it, and as the user wrote it. Inside a
+// package build the AST names a dependency's module `<package>/<path>`
+// (`dep/dep`), so two packages' modules of the same name stay apart (LEC-001);
+// what is written in the source -- what an editor must measure for a token or a
+// hover range, and print -- is the part before the slash. For every other
+// module the two are the same.
+static std::string spelledModule(const std::string& identity) {
+    auto slash = identity.find('/');
+    return slash == std::string::npos ? identity : identity.substr(0, slash);
+}
+
 // Shared with the completion-context scanning further down this file.
 static bool isIdentChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
 
@@ -186,7 +197,7 @@ public:
     }
 
     void visitScopeAccess(ScopeAccessExprAST &Node) override {
-        checkNode(&Node, Node.getLeftLoc(), Node.getLeftName().length());
+        checkNode(&Node, Node.getLeftLoc(), spelledModule(Node.getLeftName()).length());
         checkNode(&Node, Node.getRightLoc(), Node.getRightName().length());
     }
 
@@ -206,7 +217,7 @@ public:
     // positions). Same reasoning SemanticTokensVisitor::visitModuleImport
     // already documents.
     void visitModuleImport(ModuleImportExprAST &Node) override {
-        checkNode(&Node, Node.getNameLoc(), static_cast<int>(Node.getModuleName().length()));
+        checkNode(&Node, Node.getNameLoc(), static_cast<int>(spelledModule(Node.getModuleName()).length()));
     }
 
     // Default implementations for others that we might not fully traverse for MVP
@@ -403,15 +414,15 @@ std::optional<HoverInfo> SemanticQuery::hover(const DocumentAnalysis& analysis, 
             // policy (see doc 06's "unresolved node" rule).
             return std::nullopt;
         }
-        std::string text = "module `" + scopeAccess->getLeftName() + "`";
-        return HoverInfo{text, scopeAccess->getLeftLoc(),
-                         static_cast<int>(scopeAccess->getLeftName().length())};
+        const std::string spelled = spelledModule(scopeAccess->getLeftName());
+        std::string text = "module `" + spelled + "`";
+        return HoverInfo{text, scopeAccess->getLeftLoc(), static_cast<int>(spelled.length())};
     } else if (auto moduleImport = dynamic_cast<const ModuleImportExprAST*>(node)) {
-        std::string text = "module `" + moduleImport->getModuleName() + "`";
+        const std::string spelled = spelledModule(moduleImport->getModuleName());
+        std::string text = "module `" + spelled + "`";
         if (!moduleImport->getResolvedPath().empty())
             text += "\n\n" + moduleImport->getResolvedPath();
-        return HoverInfo{text, moduleImport->getNameLoc(),
-                         static_cast<int>(moduleImport->getModuleName().length())};
+        return HoverInfo{text, moduleImport->getNameLoc(), static_cast<int>(spelled.length())};
     }
     return std::nullopt;
 }
@@ -695,7 +706,7 @@ public:
     // kind depends on what the Resolver decided Left actually is (an enum
     // variant reads better as EnumMember than as a generic Method/Function).
     void visitScopeAccess(ScopeAccessExprAST &Node) override {
-        addToken(Node.getLeftLoc(), Node.getLeftName().length(), SemanticTokenType::Namespace);
+        addToken(Node.getLeftLoc(), spelledModule(Node.getLeftName()).length(), SemanticTokenType::Namespace);
         SemanticTokenType rightType = (Node.ResolvedKind == ScopeAccessKind::EnumVariant)
             ? SemanticTokenType::EnumMember
             : SemanticTokenType::Method;
@@ -708,7 +719,7 @@ public:
     // recursive visit here would corrupt this document's token stream with
     // positions that belong to someone else's file).
     void visitModuleImport(ModuleImportExprAST &Node) override {
-        addToken(Node.getNameLoc(), Node.getModuleName().length(), SemanticTokenType::Namespace,
+        addToken(Node.getNameLoc(), spelledModule(Node.getModuleName()).length(), SemanticTokenType::Namespace,
                  static_cast<int>(SemanticTokenModifier::Declaration));
     }
 
@@ -1617,7 +1628,7 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
         std::set<std::string> modules;
         for (const auto& ast : analysis.asts())
             if (auto* import = dynamic_cast<const ModuleImportExprAST*>(ast.get()))
-                modules.insert(import->getModuleName());
+                modules.insert(spelledModule(import->getModuleName()));
         for (const auto& name : modules) {
             bool dup = false;
             for (const auto& it : items) if (it.label == name) { dup = true; break; }

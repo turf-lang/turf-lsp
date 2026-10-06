@@ -3,3 +3,8 @@ editors/vscode/out/
 editors/vscode/node_modules/
 editors/vscode/*.vsix
 .DS_Store
+# Assembled by scripts/package_vsix.py for one platform; never committed.
+editors/vscode/server/
+editors/vscode/LICENSE
+dist/
+editors/vscode/.vscode-test/

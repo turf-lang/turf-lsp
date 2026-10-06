@@ -1,0 +1,249 @@
+name: Build, test, package
+
+# Builds the language server against the compiler, tests it at every layer, and
+# packages the VS Code extension for each platform with the server and the
+# standard library inside. The last step of each job installs THAT .vsix into a
+# real VS Code and drives it, so what is tested is what a user installs.
+#
+# Platforms: Linux x64, Windows x64, macOS arm64 (the compiler's Tier 1).
+#
+# NOTE for whoever first pushes this: the compiler repository's recent commits
+# (the query facade's package-graph and cancellation options, `turf graph`,
+# TURF_STATIC_LLVM) must be on the ref below, and the static-link and
+# self-containment steps have not run anywhere yet -- the machine this was
+# written on has neither a Windows nor a macOS host nor static LLVM libraries.
+# Expect the first run to need adjustment in the "Build the server" steps; the
+# package step refuses a server that depends on libraries a user may lack, and
+# prints which, so a mistake there cannot ship.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call: # release.yml runs this same build and then publishes what it made
+
+env:
+  # The compiler this server embeds. Until the compiler cuts tagged releases
+  # (REL-007), pin a commit SHA that contains include/turf/Analysis.h with
+  # PackageGraphFile, ShouldCancel, importableModules() and keywords().
+  TURF_LANG_REPO: turf-lang/turf-lang
+  TURF_LANG_REF: master
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-latest
+    env:
+      TARGET: linux-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: turf-lsp
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TURF_LANG_REPO }}
+          ref: ${{ env.TURF_LANG_REF }}
+          path: turf-lang
+
+      - name: Install LLVM 22
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y llvm-22-dev cmake ninja-build libzstd-dev zlib1g-dev xvfb
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: turf-lang/cli/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build turf (the project-graph helper)
+        run: |
+          cd turf-lang/cli
+          CGO_ENABLED=0 go build -trimpath -o "$GITHUB_WORKSPACE/out/turf" ./cmd/turf
+
+      # --as-needed drops libraries LLVM's metadata names but nothing here uses;
+      # the C++ runtime is linked in, so the server needs only the C library.
+      - name: Build the server
+        run: |
+          cmake -S turf-lsp -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DTURF_LANG_DIR="$GITHUB_WORKSPACE/turf-lang" -DTURF_STATIC_LLVM=ON \
+            -DLLVM_USE_STATIC_ZSTD=ON -DZLIB_USE_STATIC_LIBS=ON \
+            -DCMAKE_EXE_LINKER_FLAGS="-Wl,--as-needed -static-libstdc++ -static-libgcc"
+          cmake --build build --parallel
+
+      - name: Unit tests, grammar check
+        run: |
+          build/turf-lsp-tests
+          python3 turf-lsp/scripts/check_grammar.py --server build/turf-lsp
+
+      - name: Server smoke test (a staged install, TURF_HOME unset)
+        run: python3 turf-lsp/scripts/smoke.py --server build/turf-lsp --stdlib-from turf-lang --turf out/turf
+
+      - name: Package the extension
+        run: |
+          cd turf-lsp
+          python3 scripts/package_vsix.py --target ${{ env.TARGET }} --server ../build/turf-lsp \
+            --turf ../out/turf --stdlib ../turf-lang --out ../dist
+
+      - name: Extension unit tests
+        run: cd turf-lsp/editors/vscode && npm test
+
+      - name: Install the .vsix into a real VS Code and drive it
+        run: |
+          cd turf-lsp/editors/vscode
+          xvfb-run -a node out/test/integration/runTest.js "$GITHUB_WORKSPACE"/dist/turf-${{ env.TARGET }}-*.vsix
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ env.TARGET }}
+          path: dist/*.vsix
+
+  windows-x64:
+    runs-on: windows-latest
+    env:
+      TARGET: win32-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: turf-lsp
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TURF_LANG_REPO }}
+          ref: ${{ env.TURF_LANG_REF }}
+          path: turf-lang
+
+      - name: Set up MSYS2 (MinGW)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-x86_64-llvm mingw-w64-x86_64-clang mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-zstd mingw-w64-x86_64-python
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: turf-lang/cli/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build turf
+        shell: bash
+        run: |
+          cd turf-lang/cli
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          CGO_ENABLED=0 go build -trimpath -o "$GITHUB_WORKSPACE/out/turf.exe" ./cmd/turf
+
+      # Fully static: no libstdc++, libgcc or winpthread DLLs next to the server.
+      - name: Build the server
+        shell: msys2 {0}
+        run: |
+          cmake -S turf-lsp -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DTURF_LANG_DIR="$GITHUB_WORKSPACE/turf-lang" -DTURF_STATIC_LLVM=ON \
+            -DCMAKE_EXE_LINKER_FLAGS="-static"
+          cmake --build build --parallel
+
+      - name: Unit tests, grammar check
+        shell: msys2 {0}
+        run: |
+          build/turf-lsp-tests
+          python turf-lsp/scripts/check_grammar.py --server build/turf-lsp.exe
+
+      - name: Server smoke test (a staged install, TURF_HOME unset)
+        shell: msys2 {0}
+        run: python turf-lsp/scripts/smoke.py --server build/turf-lsp.exe --stdlib-from turf-lang --turf out/turf.exe
+
+      - name: Package the extension
+        shell: msys2 {0}
+        run: |
+          cd turf-lsp
+          python scripts/package_vsix.py --target ${{ env.TARGET }} --server ../build/turf-lsp.exe \
+            --turf ../out/turf.exe --stdlib ../turf-lang --out ../dist
+
+      - name: Extension unit tests
+        shell: bash
+        run: cd turf-lsp/editors/vscode && npm test
+
+      - name: Install the .vsix into a real VS Code and drive it
+        shell: bash
+        run: |
+          cd turf-lsp/editors/vscode
+          node out/test/integration/runTest.js "$GITHUB_WORKSPACE"/dist/turf-${{ env.TARGET }}-*.vsix
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ env.TARGET }}
+          path: dist/*.vsix
+
+  macos-arm64:
+    runs-on: macos-14
+    env:
+      TARGET: darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: turf-lsp
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TURF_LANG_REPO }}
+          ref: ${{ env.TURF_LANG_REF }}
+          path: turf-lang
+
+      - name: Install LLVM
+        run: |
+          brew install llvm cmake ninja zstd
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: turf-lang/cli/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build turf
+        run: |
+          cd turf-lang/cli
+          CGO_ENABLED=0 go build -trimpath -o "$GITHUB_WORKSPACE/out/turf" ./cmd/turf
+
+      # -dead_strip_dylibs: record only the libraries something actually uses.
+      - name: Build the server
+        run: |
+          cmake -S turf-lsp -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DTURF_LANG_DIR="$GITHUB_WORKSPACE/turf-lang" -DTURF_STATIC_LLVM=ON \
+            -DLLVM_USE_STATIC_ZSTD=ON -DCMAKE_PREFIX_PATH="$(brew --prefix llvm);$(brew --prefix zstd)" \
+            -DCMAKE_EXE_LINKER_FLAGS="-Wl,-dead_strip_dylibs"
+          cmake --build build --parallel
+
+      - name: Unit tests, grammar check
+        run: |
+          build/turf-lsp-tests
+          python3 turf-lsp/scripts/check_grammar.py --server build/turf-lsp
+
+      - name: Server smoke test (a staged install, TURF_HOME unset)
+        run: python3 turf-lsp/scripts/smoke.py --server build/turf-lsp --stdlib-from turf-lang --turf out/turf
+
+      - name: Package the extension
+        run: |
+          cd turf-lsp
+          python3 scripts/package_vsix.py --target ${{ env.TARGET }} --server ../build/turf-lsp \
+            --turf ../out/turf --stdlib ../turf-lang --out ../dist
+
+      - name: Extension unit tests
+        run: cd turf-lsp/editors/vscode && npm test
+
+      - name: Install the .vsix into a real VS Code and drive it
+        run: |
+          cd turf-lsp/editors/vscode
+          node out/test/integration/runTest.js "$GITHUB_WORKSPACE"/dist/turf-${{ env.TARGET }}-*.vsix
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ env.TARGET }}
+          path: dist/*.vsix

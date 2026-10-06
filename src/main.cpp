@@ -9,6 +9,7 @@
 #include "Logger.hpp"
 #include "ProjectGraph.hpp"
 #include "Version.h"
+#include "turf/Analysis.h"
 #include "AST.h" // CompilerExecutablePath
 #include "llvm/Support/FileSystem.h"
 
@@ -43,6 +44,7 @@ void printHelp(const turf_lsp::StdlibLocation& stdlib) {
         "Options:\n"
         "  -v, --version   Print the server version and exit.\n"
         "  -h, --help      Print this help and exit.\n"
+        "  --print-keywords  Print the language's reserved words, one `name kind` per line.\n"
         "\n"
         "Environment:\n"
         "  TURF_HOME       A Turf installation to take the standard library\n"
@@ -84,6 +86,16 @@ int main(int argc, char** argv) {
         }
         if (arg == "-h" || arg == "--help") {
             printHelp(stdlib);
+            return 0;
+        }
+        if (arg == "--print-keywords") {
+            // One `name kind` per line: what editors/vscode/scripts/check_grammar.py
+            // compares the TextMate grammar against, so it cannot fall behind the lexer.
+            for (const auto& kw : turf::keywords()) {
+                const char* kind = kw.Kind == turf::KeywordKind::Type ? "type"
+                                 : kw.Kind == turf::KeywordKind::Literal ? "literal" : "keyword";
+                std::cout << kw.Name << " " << kind << "\n";
+            }
             return 0;
         }
     }

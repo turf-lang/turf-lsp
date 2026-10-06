@@ -5,6 +5,11 @@
   "version": "0.1.0",
   "publisher": "turflang",
   "license": "Apache-2.0",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1b5e20",
+    "theme": "dark"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/turf-lang/turf-lsp.git"
@@ -13,7 +18,12 @@
   "bugs": {
     "url": "https://github.com/turf-lang/turf-lsp/issues"
   },
-  "keywords": ["turf", "turflang", "language server", "lsp"],
+  "keywords": [
+    "turf",
+    "turflang",
+    "language server",
+    "lsp"
+  ],
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -47,8 +57,13 @@
     "languages": [
       {
         "id": "turf",
-        "aliases": ["Turf", "turf"],
-        "extensions": [".tr"],
+        "aliases": [
+          "Turf",
+          "turf"
+        ],
+        "extensions": [
+          ".tr"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -67,38 +82,94 @@
       }
     },
     "commands": [
-      { "command": "turf.restartServer", "title": "Restart Language Server", "category": "Turf" },
-      { "command": "turf.showServerLog", "title": "Show Language Server Log", "category": "Turf" },
-      { "command": "turf.run", "title": "Run", "category": "Turf", "icon": "$(play)" },
-      { "command": "turf.build", "title": "Build", "category": "Turf" },
-      { "command": "turf.check", "title": "Check (diagnostics only)", "category": "Turf" },
-      { "command": "turf.test", "title": "Run Tests", "category": "Turf", "icon": "$(beaker)" },
-      { "command": "turf.installToolchain", "title": "How to Install the Turf Toolchain", "category": "Turf" },
-      { "command": "turf.showStatus", "title": "Show Status", "category": "Turf" }
+      {
+        "command": "turf.restartServer",
+        "title": "Restart Language Server",
+        "category": "Turf"
+      },
+      {
+        "command": "turf.showServerLog",
+        "title": "Show Language Server Log",
+        "category": "Turf"
+      },
+      {
+        "command": "turf.run",
+        "title": "Run",
+        "category": "Turf",
+        "icon": "$(play)"
+      },
+      {
+        "command": "turf.build",
+        "title": "Build",
+        "category": "Turf"
+      },
+      {
+        "command": "turf.check",
+        "title": "Check (diagnostics only)",
+        "category": "Turf"
+      },
+      {
+        "command": "turf.test",
+        "title": "Run Tests",
+        "category": "Turf",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "turf.installToolchain",
+        "title": "How to Install the Turf Toolchain",
+        "category": "Turf"
+      },
+      {
+        "command": "turf.showStatus",
+        "title": "Show Status",
+        "category": "Turf"
+      }
     ],
     "menus": {
       "editor/title/run": [
-        { "command": "turf.run", "when": "resourceLangId == turf", "group": "navigation@1" }
+        {
+          "command": "turf.run",
+          "when": "resourceLangId == turf",
+          "group": "navigation@1"
+        }
       ],
       "commandPalette": [
-        { "command": "turf.run", "when": "editorLangId == turf" },
-        { "command": "turf.build", "when": "editorLangId == turf" },
-        { "command": "turf.check", "when": "editorLangId == turf" }
+        {
+          "command": "turf.run",
+          "when": "editorLangId == turf"
+        },
+        {
+          "command": "turf.build",
+          "when": "editorLangId == turf"
+        },
+        {
+          "command": "turf.check",
+          "when": "editorLangId == turf"
+        }
       ]
     },
     "taskDefinitions": [
       {
         "type": "turf",
-        "required": ["command"],
+        "required": [
+          "command"
+        ],
         "properties": {
           "command": {
             "type": "string",
-            "enum": ["run", "build", "check", "test"],
+            "enum": [
+              "run",
+              "build",
+              "check",
+              "test"
+            ],
             "description": "The turf command to run."
           },
           "args": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Extra arguments passed to the command."
           }
         }
@@ -125,7 +196,11 @@
         },
         "turf.trace.server": {
           "type": "string",
-          "enum": ["off", "messages", "verbose"],
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
           "default": "off",
           "description": "Traces the communication between VS Code and the Turf language server."
         },
@@ -166,27 +241,39 @@
             "id": "turf.hello",
             "title": "Write a program",
             "description": "Create a file named `hello.tr` and type `main`, then press Tab. Completion, hover, signature help and go to definition work as you type, and imports are suggested for you.",
-            "media": { "markdown": "media/walkthrough/hello.md" }
+            "media": {
+              "markdown": "media/walkthrough/hello.md"
+            }
           },
           {
             "id": "turf.imports",
             "title": "Everything is one keystroke away",
             "description": "Type the name of a module such as `json` and accept it: its `import` line is added for you. Press Ctrl+. on an error for a quick fix.",
-            "media": { "markdown": "media/walkthrough/imports.md" }
+            "media": {
+              "markdown": "media/walkthrough/imports.md"
+            }
           },
           {
             "id": "turf.run",
             "title": "Run it",
             "description": "Run the file with the Turf toolchain.\n[Run](command:turf.run)",
-            "media": { "markdown": "media/walkthrough/run.md" },
-            "completionEvents": ["onCommand:turf.run"]
+            "media": {
+              "markdown": "media/walkthrough/run.md"
+            },
+            "completionEvents": [
+              "onCommand:turf.run"
+            ]
           },
           {
             "id": "turf.toolchain",
             "title": "Get the Turf toolchain",
             "description": "Editing needs nothing else, but running programs needs the Turf compiler.\n[How to install](command:turf.installToolchain)",
-            "media": { "markdown": "media/walkthrough/toolchain.md" },
-            "completionEvents": ["onCommand:turf.installToolchain"]
+            "media": {
+              "markdown": "media/walkthrough/toolchain.md"
+            },
+            "completionEvents": [
+              "onCommand:turf.installToolchain"
+            ]
           }
         ]
       }
@@ -196,7 +283,8 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "npm run compile && node ./out/test/unit.js"
+    "test": "npm run compile && node ./out/test/unit.js",
+    "test:integration": "npm run compile && node ./out/test/integration/runTest.js"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
@@ -204,6 +292,7 @@
   "devDependencies": {
     "@types/node": "18.x",
     "@types/vscode": "^1.80.0",
+    "@vscode/test-electron": "^3.1.0",
     "typescript": "^5.1.3"
   }
 }
