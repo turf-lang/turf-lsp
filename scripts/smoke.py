@@ -400,6 +400,30 @@ def t_completion_bare_word_scope(c, d):
     check(order["count"] < order["while"], "a local does not outrank a keyword")
 
 
+def t_completion_auto_import(c, d):
+    """Typing the name of a module the file has not imported offers it, and
+    accepting it adds the `import` line (after the last import, or after the
+    header comment when there are none)."""
+    text = COMPLETION_BASE.replace("PLACE", "js")
+    items = complete_at(c, d, "auto1.tr", text, "js\n", offset=2)
+    pick = [i for i in items if i["label"] == "json"]
+    check(len(pick) == 1, "json is not offered for auto-import: %r" % [i["label"] for i in items if i.get("kind") == 9])
+    edits = pick[0].get("additionalTextEdits")
+    check(edits and len(edits) == 1, "the item carries no import edit: %r" % pick[0])
+    check(apply_edits(text, edits).startswith("import io;\nimport json;\n"),
+          "the import is not added after the existing one:\n" + apply_edits(text, edits)[:80])
+    # Already imported: offered as the module itself, with no edit.
+    io = [i for i in complete_at(c, d, "auto2.tr", COMPLETION_BASE.replace("PLACE", "i"), "i\n", offset=1)
+          if i["label"] == "io"]
+    check(io and "additionalTextEdits" not in io[0], "an imported module should not re-import: %r" % io)
+    # No imports: after the header comment, with a blank line.
+    bare = "// the header\n\nfn main(): int {\n    js\n    return 0;\n}\n"
+    pick = [i for i in complete_at(c, d, "auto3.tr", bare, "js\n", offset=2) if i["label"] == "json"]
+    check(pick, "no auto-import in a file with no imports")
+    check(apply_edits(bare, pick[0]["additionalTextEdits"]).startswith("// the header\n\nimport json;\n\nfn main"),
+          "the import is not put after the header:\n" + apply_edits(bare, pick[0]["additionalTextEdits"])[:80])
+
+
 def t_completion_regions(c, d):
     """Declarations at the top level, statements in a function, only types in
     a struct body."""
@@ -580,7 +604,9 @@ def make_project(d):
     (proj / "turf.toml").write_text(MANIFEST % ("proj", '\n[dependencies]\ndep = { path = "../dep" }\n'))
     (dep / "turf.toml").write_text(MANIFEST % ("dep", ""))
     (dep / "src" / "dep.tr").write_text("pub fn answer(): int {\n    return 21;\n}\n")
-    (proj / "src" / "lib" / "util.tr").write_text("pub fn double_it(x: int): int {\n    return x * 2;\n}\n")
+    (proj / "src" / "lib" / "util.tr").write_text(
+        "pub fn double_it(x: int): int {\n    return x * 2;\n}\n\n"
+        "fn hidden_helper(): int {\n    return 0;\n}\n")  # private: not for other modules
     return proj
 
 
@@ -615,6 +641,7 @@ def t_project_imports_resolve(c, d):
         "textDocument": doc.td(), "position": doc.pos("util::double_it", offset=6),
         "context": {"triggerKind": 2, "triggerCharacter": ":"}}))
     check("double_it" in got, "util:: completion lacks double_it: %r" % got[:15])
+    check("hidden_helper" not in got, "util:: offers a private function another module may not call")
 
 
 def t_project_import_names(c, d):

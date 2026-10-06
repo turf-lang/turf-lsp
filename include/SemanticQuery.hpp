@@ -56,6 +56,10 @@ struct CompletionItem {
     // that's already a small, uniformly-relevant set with no ranking
     // question worth answering (enum variants, import module names, ...).
     std::string sortText;
+    // Non-empty: accepting this item must also add `import <module>;` to the
+    // document (a module the file has not imported yet). LSPHandler turns it
+    // into an additionalTextEdit, because only it knows the document's text.
+    std::string autoImportModule;
 };
 
 enum class SemanticTokenType {
@@ -229,6 +233,18 @@ public:
     };
     static std::optional<SignatureHelp> getSignatureHelp(const DocumentAnalysis& analysis,
                                                          const std::string& text, size_t byteOffset);
+
+    // Where `import <module>;` goes in `text`: after the last existing import,
+    // or, in a file with none, after its header (leading comments, blank
+    // lines, and `unsafe module;`). `line` and `character` are 0-based and
+    // `character` counts bytes (an import line is ASCII, so the byte column
+    // is also the UTF-16 one).
+    struct ImportInsertion {
+        int line = 0;
+        int character = 0;
+        std::string text;
+    };
+    static ImportInsertion importInsertion(const std::string& text, const std::string& module);
 
     // The region the cursor (a byte offset into `text`) is in, from the
     // braces before it. A purely textual scan -- it ignores braces inside

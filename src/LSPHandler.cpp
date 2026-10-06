@@ -1932,6 +1932,14 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
                 lspItem["insertTextFormat"] = 2; // Snippet
             }
             if (!item.sortText.empty()) lspItem["sortText"] = item.sortText;
+            // Auto-import: accepting a module this file has not imported
+            // also adds its `import` line, wherever the imports are.
+            if (!item.autoImportModule.empty()) {
+                auto at = SemanticQuery::importInsertion(textSnap->text, item.autoImportModule);
+                json position = {{"line", at.line}, {"character", at.character}};
+                lspItem["additionalTextEdits"] = json::array(
+                    {{{"range", {{"start", position}, {"end", position}}}, {"newText", at.text}}});
+            }
             // doc 05 G4: carries just enough to re-resolve this exact
             // symbol later, without eagerly paying for the doc-comment
             // file read every item in a (possibly large) list would cost.

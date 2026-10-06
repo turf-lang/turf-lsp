@@ -1358,6 +1358,51 @@ std::optional<SemanticQuery::SignatureHelp> SemanticQuery::getSignatureHelp(cons
     return help;
 }
 
+SemanticQuery::ImportInsertion SemanticQuery::importInsertion(const std::string& text, const std::string& module) {
+    std::vector<std::string> lines;
+    {
+        std::istringstream in(text);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            lines.push_back(std::move(line));
+        }
+    }
+    const bool endsWithNewline = !text.empty() && text.back() == '\n';
+    const std::string statement = "import " + module + ";";
+
+    auto startsWith = [](const std::string& s, const char* prefix) { return s.rfind(prefix, 0) == 0; };
+    int lastImport = -1;
+    for (size_t i = 0; i < lines.size(); ++i)
+        if (startsWith(lines[i], "import ")) lastImport = static_cast<int>(i);
+
+    ImportInsertion at;
+    if (lastImport >= 0) {
+        const int next = lastImport + 1;
+        if (next < static_cast<int>(lines.size()) || endsWithNewline) {
+            at.line = next;
+            at.text = statement + "\n";
+        } else { // the file ends right after its last import, with no newline
+            at.line = lastImport;
+            at.character = static_cast<int>(lines[lastImport].size());
+            at.text = "\n" + statement;
+        }
+        return at;
+    }
+
+    // No imports yet: after the header, with a blank line to set them off.
+    int header = 0;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        size_t first = lines[i].find_first_not_of(" \t");
+        const std::string trimmed = first == std::string::npos ? "" : lines[i].substr(first);
+        if (trimmed.empty() || startsWith(trimmed, "//") || trimmed == "unsafe module;") header = static_cast<int>(i) + 1;
+        else break;
+    }
+    at.line = header;
+    at.text = statement + "\n\n";
+    return at;
+}
+
 CompletionRegion SemanticQuery::regionAt(const std::string& text, size_t byteOffset) {
     std::vector<char> blocks; // 'T' a struct/enum body, 'F' anything else (a function body, a nested block)
     std::string header;       // the text since the last `;`, `{` or `}`: what the next `{` opens
@@ -1424,7 +1469,10 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
     if (ctx.kind == TriggerContext::Kind::ScopeAccess) {
         const std::string& base = ctx.base;
         if (symTable.hasModule(base)) {
-            for (const auto& name : symTable.getModuleFunctionNames(base)) {
+            // Only what another module may call (LEC-002: declarations are
+            // private unless `pub`); offering a private function would insert
+            // a call the compiler rejects.
+            for (const auto& name : symTable.getModulePublicFunctionNames(base)) {
                 if (auto sym = firstOverload(symTable, name, base)) {
                     CompletionItem item;
                     item.label = name;
@@ -1460,6 +1508,7 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
                 const ResolverFunctionSymbol* sym = entry.second;
                 if (method == "new" || method == "default") continue;
                 if (isInstanceMethod(sym)) continue; // static-only after '::'
+                if (!owner.empty() && sym && !sym->IsPublic) continue; // another module's private method
                 CompletionItem item;
                 item.label = method;
                 item.kind = 2; // Method (static)
@@ -1505,6 +1554,7 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
             const ResolverFunctionSymbol* sym = entry.second;
             if (method == "new" || method == "default") continue; // ConstructorCalledOnInstanceError
             if (!isInstanceMethod(sym)) continue; // instance-only after '.'
+            if (!owner.empty() && !sym->IsPublic) continue; // another module's private method
             CompletionItem item;
             item.label = method;
             item.kind = 2; // Method
@@ -1573,6 +1623,23 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
             item.kind = 9; // Module
             item.detail = "module";
             item.sortText = "1" + name;
+            items.push_back(std::move(item));
+        }
+        // Modules this file could import but has not: offered too, and
+        // accepting one adds its `import` line (auto-import), so the user can
+        // type `json` and get `import json;` at the top without leaving the
+        // line they are on. They rank below everything already usable.
+        for (const auto& name : analysis.result.importableModules()) {
+            if (modules.count(name)) continue;
+            bool dup = false;
+            for (const auto& it : items) if (it.label == name) { dup = true; break; }
+            if (dup) continue;
+            CompletionItem item;
+            item.label = name;
+            item.kind = 9; // Module
+            item.detail = "module -- adds `import " + name + ";`";
+            item.sortText = "4" + name;
+            item.autoImportModule = name;
             items.push_back(std::move(item));
         }
     }
