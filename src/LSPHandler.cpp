@@ -1791,9 +1791,29 @@ void LSPHandler::doCodeAction(json id, std::string uri, json diagnostics,
             continue;
         }
 
-        // E031 "'io' isn't a known enum, struct, or module": the most common
-        // newcomer mistake -- `io::printline(...)` without `import io;`. When
-        // the name is a module this file can import, offer the import.
+        // E145 "Module 'list' is not imported in this file": the module IS in
+        // the program (the prelude, or another import, loaded it) but a file may
+        // spell `list::` only after importing it itself -- no transitive imports
+        // (compiler LEC-008, FREEZE.md 6.24). The message names the module and
+        // the fix is one line, so there is nothing to look up: unlike E031 the
+        // module is known to exist. Also the answer for `import list::List;`
+        // followed by `list::List`, where only the symbol was imported.
+        if (code == "E145") {
+            const std::string quote = "'";
+            size_t open = message.find(quote);
+            size_t close = open == std::string::npos ? std::string::npos : message.find(quote, open + 1);
+            if (close != std::string::npos && close > open + 1) {
+                const std::string name = message.substr(open + 1, close - open - 1);
+                if (auto action = importAction(uri, "import " + name + ";", diag)) actions.push_back(std::move(*action));
+            }
+            continue;
+        }
+
+        // E031 "'json' isn't a known enum, struct, or module": the most common
+        // newcomer mistake -- `json::parse(...)` without `import json;`. When
+        // the name is a module this file can import, offer the import. (Never
+        // the prelude's modules -- `io`, `math`, `sys`, ... -- which need no
+        // import and so never produce this.)
         if (code == "E031") {
             const std::string quote = "'";
             size_t open = message.find(quote);

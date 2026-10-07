@@ -1605,6 +1605,7 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
     if (ctx.kind == TriggerContext::Kind::ScopeAccess) {
         const std::string& base = ctx.base;
         if (symTable.hasModule(base)) {
+            const size_t firstMember = items.size();
             // Only what another module may call (LEC-002: declarations are
             // private unless `pub`); offering a private function would insert
             // a call the compiler rejects.
@@ -1626,6 +1627,15 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
             for (const auto& name : symTable.getModuleConstantNames(base)) {
                 items.push_back({name, 21, "constant in " + base, ""});
             }
+            // hasModule() means "loaded somewhere in the program", which is not
+            // "this file may write `base::`": the prelude loads `list` (through
+            // `strings`), and an import elsewhere loads whatever it names. A file
+            // may spell `m::` only for a module it imports itself (compiler
+            // LEC-008), so for any other loaded module accepting a member also
+            // adds `import m;` -- inserting the bare call alone would be E145.
+            if (!symTable.isModuleImportedBy(base, ""))
+                for (size_t i = firstMember; i < items.size(); ++i)
+                    items[i].autoImportModule = base;
         } else if (symTable.isEnumName(base)) {
             if (auto enumType = symTable.lookupEnumType(base)) {
                 for (const auto& variant : enumType->getVariants()) {
@@ -1793,6 +1803,37 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
             // resolveModule left "" -- current-file function.
             item.sortText = "1" + name;
             items.push_back(std::move(item));
+        }
+    }
+    // The prelude's bare-callable functions (`printline`, `abs`, `exit`, ...:
+    // every public free function of io, math and sys, compiler FREEZE.md 6.25).
+    // They need no import and no qualifier, so they are offered as plain usable
+    // names -- but only where the compiler would reach them: a function THIS
+    // file declares with the same name hides the prelude's (the prelude is the
+    // last resort of a bare call), so offering both would show a name that
+    // resolves to the other one.
+    if (region == CompletionRegion::Statement) {
+        const auto ownFunctions = symTable.getAllCurrentFileFunctionNames();
+        const std::set<std::string> hidden(ownFunctions.begin(), ownFunctions.end());
+        for (const auto& module : turf::preludeBareModules()) {
+            for (const auto& name : symTable.getModulePublicFunctionNames(module)) {
+                if (name.find('.') != std::string::npos) continue; // methods, not bare-callable
+                if (hidden.count(name)) continue;
+                bool dup = false;
+                for (const auto& it : items) if (it.label == name && it.kind == 3) { dup = true; break; }
+                if (dup) continue; // two prelude modules never share a name today; stay safe
+                if (auto sym = firstOverload(symTable, name, module)) {
+                    CompletionItem item;
+                    item.label = name;
+                    item.kind = 3;
+                    item.detail = sym->signature();
+                    item.insertSnippet = buildCallSnippet(name, *sym, false);
+                    item.resolveName = name;
+                    item.resolveModule = module;
+                    item.sortText = "1" + name;
+                    items.push_back(std::move(item));
+                }
+            }
         }
     }
     // Types this document can name unqualified. A name with a `::` in it is a

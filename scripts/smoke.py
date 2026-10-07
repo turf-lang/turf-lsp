@@ -397,24 +397,73 @@ def complete_at(c, d, name, text, marker, offset=0, trigger=None):
 
 def t_completion_bare_word_scope(c, d):
     """What is offered for a bare word is what this file can use there: its
-    locals, functions, types and imported modules -- not the locals of every
-    stdlib function it pulls in, and not modules only `io` imports."""
+    locals, functions, types, imported modules and the prelude -- not the locals
+    of every stdlib function it pulls in, and not modules only something else
+    imports."""
     items = complete_at(c, d, "bare.tr", COMPLETION_BASE.replace("PLACE", "co"), "co\n", offset=2)
     got = labels(items)
     for want in ("count", "helper", "main", "Point", "io", "while", "int", "true"):
         check(want in got, "bare-word completion lacks %r" % want)
     for leaked in ("frac_div", "saw_digit", "readCount", "int_part", "list::List", "strings::StringBuilder"):
         check(leaked not in got, "bare-word completion offers %r, which is not usable here" % leaked)
-    # `sys` and `list` are modules only `io` imports. They may be offered as
-    # something to import, but never as if this file could already use them.
-    for module in ("sys", "list"):
-        for it in items:
-            if it["label"] == module:
-                check(it.get("additionalTextEdits"), "%r is offered as usable, but this file does not import it" % module)
+    # `sys` is a prelude module: usable as it stands, so offered with no import
+    # to add. `list` is only loaded because the prelude's own modules import it:
+    # it may be offered as something to import, but never as if this file could
+    # already use it.
+    for it in items:
+        if it["label"] == "sys":
+            check(not it.get("additionalTextEdits"), "`sys` is in the prelude yet offered with an import edit")
+        if it["label"] == "list":
+            check(it.get("additionalTextEdits"), "'list' is offered as usable, but this file does not import it")
+    check("sys" in got, "the prelude module `sys` is not offered")
     check(len(got) == len(set(got)), "duplicate completion labels: %r" % sorted(x for x in got if got.count(x) > 1)[:5])
     # Real symbols outrank keywords: `count` sorts before `while`.
     order = {i["label"]: i.get("sortText", i["label"]) for i in items}
     check(order["count"] < order["while"], "a local does not outrank a keyword")
+
+
+def t_completion_prelude_functions(c, d):
+    """The prelude's functions (`printline`, `abs`, `exit`: every public free
+    function of io, math and sys) are bare-callable, so a bare word offers them,
+    with no import to add -- unless the file declares a function of the same name,
+    which hides the prelude's: then only the file's own is offered, once."""
+    items = complete_at(c, d, "prel1.tr", COMPLETION_BASE.replace("PLACE", "pri"), "pri\n", offset=3)
+    by = {}
+    for it in items:
+        by.setdefault(it["label"], []).append(it)
+    for want in ("printline", "print", "abs", "max", "exit", "input"):
+        check(want in by, "the prelude function %r is not offered for a bare word" % want)
+        check(not by[want][0].get("additionalTextEdits"), "%r needs no import but carries an import edit" % want)
+    # Not callable bare: other prelude modules' functions read as methods, and a
+    # method is never a bare name.
+    for nope in ("is_digit", "length", "StringBuilder.append"):
+        check(nope not in by, "%r is offered bare, but is not callable that way" % nope)
+    # Shadowing: this file's own `max` is the one a bare `max(...)` reaches.
+    text = ("fn max(left: int, right: int): int {\n    return left;\n}\n\nfn main(): int {\n    pri\n    return 0;\n}\n")
+    own = [i for i in complete_at(c, d, "prel2.tr", text, "pri\n", offset=3) if i["label"] == "max"]
+    check(len(own) == 1, "a hidden prelude `max` is offered beside the file's own: %d items" % len(own))
+    check("int left" in own[0].get("detail", ""), "the `max` offered is not the file's own: %r" % own[0].get("detail"))
+
+
+def t_completion_member_of_unimported_module_adds_the_import(c, d):
+    """`list::` offers `list`'s members even though this file never imported it
+    (the prelude's modules loaded it) -- but accepting one also adds `import
+    list;`, since the bare member alone is E145. A prelude module (`io::`) adds
+    nothing: it is already this file's."""
+    text = "fn main(): int {\n    list::\n    return 0;\n}\n"
+    items = complete_at(c, d, "mem1.tr", text, "list::", offset=6, trigger=":")
+    check(items, "no members offered after `list::`")
+    for it in items:
+        check(it.get("additionalTextEdits"), "member %r of an unimported module carries no import edit" % it["label"])
+        check(any("import list;" in e["newText"] for e in it["additionalTextEdits"]),
+              "member %r adds the wrong import: %r" % (it["label"], it["additionalTextEdits"]))
+    io = complete_at(c, d, "mem2.tr", "fn main(): int {\n    io::\n    return 0;\n}\n", "io::", offset=4, trigger=":")
+    check(io, "no members offered after `io::`")
+    for it in io:
+        check(not it.get("additionalTextEdits"), "member %r of a prelude module wants an import" % it["label"])
+    # An imported module's members carry nothing either.
+    imp = complete_at(c, d, "mem3.tr", "import list;\n\nfn main(): int {\n    list::\n    return 0;\n}\n", "list::", offset=6, trigger=":")
+    check(imp and not any(it.get("additionalTextEdits") for it in imp), "an imported module's members carry an import edit")
 
 
 def t_completion_auto_import(c, d):
@@ -920,19 +969,38 @@ def t_bad_turf_home_is_ignored(c, d):
         cl.stop()
 
 
+def t_prelude_needs_no_import(c, d):
+    """`io`, `math`, `sys` and the rest of the prelude are in every file: no
+    import is written, none is demanded and none is offered -- the server must
+    get that from the compiler's analysis, not from a list of its own. Bare
+    `printline(...)` works too, and hover and go-to-definition follow it into
+    the standard library."""
+    text = ("fn main(): int {\n    printline(\"hi\");\n    io::printline(\"qualified\");\n"
+            "    return abs(-3) - math::abs(-3);\n}\n")
+    doc = Doc(c, d / "prelude.tr", text)
+    bad = [x for x in doc.diagnostics() if x.get("severity", 1) == 1]
+    check(not bad, "the prelude needed an import: %r" % [(x.get("code"), x["message"][:60]) for x in bad])
+    hover = c.result("textDocument/hover", {"textDocument": doc.td(), "position": doc.pos("printline", offset=2)})
+    check(hover and "fn printline" in hover["contents"]["value"], "no hover on a bare prelude call: %r" % hover)
+    target = c.result("textDocument/definition", {"textDocument": doc.td(), "position": doc.pos("printline", offset=2)})
+    uris = [t.get("uri", t.get("targetUri", "")) for t in (target if isinstance(target, list) else [target] if target else [])]
+    check(any(u.endswith("/core/io.tr") for u in uris), "definition of a bare prelude call: %r" % uris)
+
+
 def t_code_action_add_missing_import(c, d):
-    """`io::printline(...)` without `import io;` is the commonest first mistake;
-    the lightbulb must offer the import, placed with the other imports."""
-    text = "// a comment\nimport math;\n\nfn main(): int {\n    io::printline(\"hi\");\n    return 0;\n}\n"
+    """`json::parse(...)` without `import json;` is the commonest first mistake;
+    the lightbulb must offer the import, placed with the other imports. (`io` is
+    not the example any more: it is in the prelude and never needs one.)"""
+    text = "// a comment\nimport math;\n\nfn main(): int {\n    json::parse(\"1\");\n    return 0;\n}\n"
     doc = Doc(c, d / "noimport.tr", text)
-    diags = [x for x in doc.diagnostics() if x.get("code") == "E031" and "'io'" in x["message"]]
+    diags = [x for x in doc.diagnostics() if x.get("code") == "E031" and "'json'" in x["message"]]
     check(diags, "no E031 for the missing import")
     actions = c.result("textDocument/codeAction", {
         "textDocument": doc.td(), "range": diags[0]["range"], "context": {"diagnostics": diags}})
-    fix = [a for a in actions if a["title"] == "Add `import io;`"]
-    check(fix, "no 'Add import io' quick fix: %r" % [a["title"] for a in actions])
+    fix = [a for a in actions if a["title"] == "Add `import json;`"]
+    check(fix, "no 'Add import json' quick fix: %r" % [a["title"] for a in actions])
     edited = apply_edits(text, fix[0]["edit"]["changes"][doc.uri])
-    check(edited.startswith("// a comment\nimport math;\nimport io;\n"), "the import is not placed after the others:\n" + edited[:80])
+    check(edited.startswith("// a comment\nimport math;\nimport json;\n"), "the import is not placed after the others:\n" + edited[:80])
     # A name that is no module offers nothing.
     text2 = "fn main(): int {\n    nosuchthing::f();\n    return 0;\n}\n"
     doc2 = Doc(c, d / "noimport2.tr", text2)
@@ -941,6 +1009,33 @@ def t_code_action_add_missing_import(c, d):
         acts = c.result("textDocument/codeAction", {"textDocument": doc2.td(), "range": diags2[0]["range"],
                                                     "context": {"diagnostics": diags2}})
         check(not [a for a in acts if a["title"].startswith("Add `import")], "an import is offered for a name that is no module")
+
+
+def t_code_action_e145_module_loaded_but_not_imported(c, d):
+    """A module the file did not import itself is E145 even when something else
+    loaded it (compiler LEC-008, no transitive imports): the prelude's `strings`
+    loads `list`, and `import json;` loads whatever json imports. The module
+    exists, so the lightbulb offers `import list;` with no lookup -- both for a
+    file that imported nothing of it and for one that imported only a SYMBOL
+    (`import list::List;` does not allow `list::List`)."""
+    cases = [
+        ("e145a.tr", "import json;\n\nfn main(): int {\n    mut l: list::List<int> = list::List::default();\n    return 0;\n}\n",
+         "import json;\nimport list;\n"),
+        ("e145b.tr", "import list::List;\n\nfn main(): int {\n    mut a: List<int> = List::default();\n"
+                     "    mut b: list::List<int> = list::List::default();\n    return 0;\n}\n",
+         "import list::List;\nimport list;\n"),
+    ]
+    for name, text, expect in cases:
+        doc = Doc(c, d / name, text)
+        diags = [x for x in doc.diagnostics() if x.get("code") == "E145"]
+        check(diags, "%s: no E145 for a module that was loaded but not imported" % name)
+        check("'list'" in diags[0]["message"], "%s: E145 does not name the module: %r" % (name, diags[0]["message"][:80]))
+        actions = c.result("textDocument/codeAction", {
+            "textDocument": doc.td(), "range": diags[0]["range"], "context": {"diagnostics": diags}})
+        fix = [a for a in actions if a["title"] == "Add `import list;`"]
+        check(fix, "%s: no 'Add import list' quick fix: %r" % (name, [a["title"] for a in actions]))
+        edited = apply_edits(text, fix[0]["edit"]["changes"][doc.uri])
+        check(edited.startswith(expect), "%s: the import is not placed with the others:\n%s" % (name, edited[:70]))
 
 
 def t_code_action_organize_imports(c, d):
