@@ -64,7 +64,7 @@ Not done, on purpose: call and type hierarchy, a debug adapter (gdb works on
 
 - `src/CompilerService.cpp` runs one analysis through `turf::analyze()`
   (`include/turf/Analysis.h` in the compiler): a project's package graph, the
-  other open documents' text, cancellation, lint. Everything the compiler keeps in
+  other open documents' text, cancellation, lint, flow analysis. Everything the compiler keeps in
   process-wide globals is saved and restored there, in one place.
 - `src/SemanticQuery.cpp` answers questions about an analysis (completion,
   hover, tokens, signature help).

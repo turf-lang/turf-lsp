@@ -306,6 +306,23 @@ def t_diagnostics_error_width(c, d):
     check(width == len("missing"), "squiggle is %d wide, want %d" % (width, len("missing")))
 
 
+def t_diagnostics_flow_errors(c, d):
+    # A real compile finds these during code generation, which the server
+    # never runs; the facade's RunFlowAnalysis is what brings them here.
+    src = ("import mem;\n\nfn main(): int {\n    unsafe {\n"
+           "        mut p: void* = mem::alloc(8);\n        mem::free(p);\n"
+           "        mem::free(p);\n    }\n    return 0;\n}\n"
+           "\nfn f(c: bool): int {\n    if c {\n        return 1;\n    }\n}\n")
+    doc = Doc(c, d / "flow.tr", src)
+    diags = doc.diagnostics()
+    dfree = [x for x in diags if x.get("code") == "E017"]
+    check(len(dfree) == 1, "no E017 for a double free: %r" % diags)
+    check(dfree[0]["range"]["start"]["line"] == 6, "E017 on the wrong line: %r" % dfree[0])
+    noret = [x for x in diags if x.get("code") == "E009"]
+    check(len(noret) == 1, "no E009 for a missing return: %r" % diags)
+    check(noret[0]["range"]["start"]["line"] == 11, "E009 on the wrong line: %r" % noret[0])
+
+
 def t_diagnostics_clean(c, d):
     doc = Doc(c, d / "clean.tr", FEATURES)
     diags = doc.diagnostics()

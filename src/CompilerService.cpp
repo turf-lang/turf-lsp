@@ -132,6 +132,10 @@ std::unique_ptr<DocumentAnalysis> CompilerService::analyze(std::string_view sour
     // does; without this the editor would miss the warnings `turf` prints
     // (unused variables, unreachable code, shadowing).
     options.RunLint = true;
+    // Likewise the flow checks a real compile runs during code generation:
+    // missing return, use before assignment, double free, use after free,
+    // unchecked nullable references, unused variables and the rest.
+    options.RunFlowAnalysis = true;
 
     // A file in a project is analysed with the project's package graph, so
     // `import` finds its sibling modules and dependencies as `turf build`

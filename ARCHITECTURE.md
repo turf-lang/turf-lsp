@@ -36,7 +36,10 @@ The call is given:
   so `import` resolves as in `turf build`;
 - a cancellation callback, asked at the two boundaries of the pipeline, so an
   analysis of text a later keystroke replaced stops early;
-- the lint option, so the warnings `turf` prints reach the editor.
+- the lint option, so the warnings `turf` prints reach the editor;
+- the flow-analysis option, so what a compile finds while generating code
+  (missing return, use before assignment, double free and use after free,
+  unused variables, ...) reaches it too.
 
 The result owns the program, the resolver's symbol table and the inferred types,
 is immutable, and is kept per document so requests can query it after the fact.
