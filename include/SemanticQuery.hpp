@@ -1,8 +1,8 @@
 #pragma once
 
 #include "DocumentAnalysis.hpp"
-#include "AST.h"
-#include "ResolverSymbolTable.h"
+#include "frontend/AST.h"
+#include "resolve/ResolverSymbolTable.h"
 #include <optional>
 #include <string>
 #include <vector>

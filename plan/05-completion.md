@@ -104,7 +104,7 @@ The server currently returns the full candidate set and lets the client filter.
 That's valid (VS Code filters client-side), but for large candidate sets return
 `isIncomplete: true` and pre-filter by the typed `prefix` (already captured in
 `TriggerContext.prefix`) using the compiler's own `SuggestionIndex` trie
-(`include/SuggestionIndex.h`) for fuzzy/edit-distance ranking — reusing the same
+(`src/diagnostics/SuggestionIndex.h`) for fuzzy/edit-distance ranking — reusing the same
 "did you mean" engine the error messages use keeps suggestions consistent with
 diagnostics.
 

@@ -18,7 +18,7 @@ Also, the mapped range is only 1 char wide, uses `severity` correctly
 (1=error/2=warning), but drops `code`, `relatedInformation`, and `hint`.
 
 ## Compiler data consumed
-`DiagnosticEngine::Diag` (see `include/Lexer.h`) already carries everything:
+`DiagnosticEngine::Diag` (see `src/frontend/Lexer.h`) already carries everything:
 `Loc` (line/col/filename), `Msg`, `Hint`, `IsWarning`, `RelatedLocations`
 (structural context), `Category` (SLM enum), `Filename`, `Code` (`E0NN`).
 Warnings also flow through the same engine (`TurfError::warn()` → `add(...,

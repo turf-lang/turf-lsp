@@ -3,8 +3,8 @@
 #include "Logger.hpp"
 #include "TextFeatures.hpp"
 #include "Uri.hpp"
-#include "Formatter.h"
-#include "Parser.h"
+#include "frontend/Parser.h"
+#include "tooling/Formatter.h"
 #include "Version.h"
 #include <algorithm>
 #include <cctype>
@@ -1743,7 +1743,7 @@ std::optional<std::string> extractImportSuggestion(const std::string& diagnostic
 }
 
 // "Variable 'x' is declared but never used." (UnusedVariableWarning,
-// ErrorsFlow.h) -- a lint WARNING, which (unlike a typed TurfError)
+// diagnostics/ErrorsFlow.h) -- a lint WARNING, which (unlike a typed TurfError)
 // never carries a stable E0NN code (TurfWarning::warn() doesn't pass one
 // to DiagnosticEngine::add() at all), so this is necessarily a message-
 // pattern match, the documented fallback for exactly this situation
@@ -1836,7 +1836,7 @@ void LSPHandler::doCodeAction(json id, std::string uri, json diagnostics,
             // Find the matching VarDecl declaration by line number (the
             // diagnostic's own range points at the `mut`/`immut` KEYWORD,
             // not the name -- VarDeclExprAST::getLoc() vs getNameLoc(),
-            // see ASTDecl.h -- so it can't be used directly as the insert
+            // see frontend/ASTDecl.h -- so it can't be used directly as the insert
             // position). Reuses findAllReferenceOccurrences() rather than
             // re-scanning the source line by hand: a declaration
             // occurrence on the SAME line as the diagnostic is, in

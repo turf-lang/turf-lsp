@@ -8,7 +8,7 @@
 // UTF-16 **code-unit** offset by default (negotiable to UTF-8/UTF-32 via
 // `general.positionEncodings` in `initialize`). The compiler's
 // `SourceLocation` is 1-indexed lines and a **byte** column -- `CurCol` in
-// Lexer.cpp advances once per `SourceFile->get()`, i.e. once per UTF-8
+// frontend/Lexer.cpp advances once per `SourceFile->get()`, i.e. once per UTF-8
 // *byte*, not per codepoint. Every boundary crossing between the two must
 // go through here; no handler should do raw `col - 1` / `col + 1`
 // arithmetic against compiler locations directly anymore, since that's

@@ -53,8 +53,8 @@ compiler's own suite, and the LSP stops duplicating it.
 
 **✅ DONE (2026-09-15).** The module-file resolver half of this item is
 implemented: `std::string ResolveModuleFile(const std::string &ModuleName,
-const std::string &ImportingFile = "")` in `include/Parser.h` /
-`src/ParserModule.cpp`, sharing `TurfInstallRoot()`/`IndexModuleDir()` with
+const std::string &ImportingFile = "")` in `src/frontend/Parser.h` /
+`src/frontend/ParserModule.cpp`, sharing `TurfInstallRoot()`/`IndexModuleDir()` with
 `ParseModuleImportByName()` so it can never disagree with what a real `import`
 actually resolves to (stdlib → usr package → importing-file directory → cwd,
 pure lookup, no parsing/diagnostic side effects). This unblocks doc 07's bug
@@ -88,13 +88,13 @@ here; the remaining work is entirely on the turf-lsp side** (replace
 see `turf-lsp/plan/04-code-highlighting.md` / `07-goto-definition-declaration.md`).
 
 Confirmed present, each with a real `getNameLoc() -> const SourceLocation&`:
-- `VarDeclExprAST::getNameLoc()` (`include/ASTDecl.h`)
-- `FuncDefExprAST::getNameLoc()` (`include/ASTDecl.h`)
-- `ExternFuncDeclExprAST::getNameLoc()` (`include/ASTDecl.h`)
-- `StructDeclExprAST::getNameLoc()` (`include/ASTDecl.h`)
-- `ModuleImportExprAST::getNameLoc()` (`include/ASTDecl.h`)
-- `FieldAccessExprAST::getNameLoc()` (`include/ASTAccess.h`)
-- `MethodCallExprAST::getNameLoc()` (`include/ASTAccess.h`)
+- `VarDeclExprAST::getNameLoc()` (`src/frontend/ASTDecl.h`)
+- `FuncDefExprAST::getNameLoc()` (`src/frontend/ASTDecl.h`)
+- `ExternFuncDeclExprAST::getNameLoc()` (`src/frontend/ASTDecl.h`)
+- `StructDeclExprAST::getNameLoc()` (`src/frontend/ASTDecl.h`)
+- `ModuleImportExprAST::getNameLoc()` (`src/frontend/ASTDecl.h`)
+- `FieldAccessExprAST::getNameLoc()` (`src/frontend/ASTAccess.h`)
+- `MethodCallExprAST::getNameLoc()` (`src/frontend/ASTAccess.h`)
 
 That is the exact set of seven node kinds the LSP's `findNameLoc()` (in
 `turf-lsp/src/SemanticQuery.cpp`) was built to recover textually. Original

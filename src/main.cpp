@@ -10,7 +10,7 @@
 #include "ProjectGraph.hpp"
 #include "Version.h"
 #include "turf/Analysis.h"
-#include "AST.h" // CompilerExecutablePath
+#include "frontend/AST.h" // CompilerExecutablePath
 #include "llvm/Support/FileSystem.h"
 
 namespace {

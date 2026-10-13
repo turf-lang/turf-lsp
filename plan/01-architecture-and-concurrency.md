@@ -155,10 +155,10 @@ fallback if a client sends it.)
 
 ### 5b. Incremental *analysis* (optimization, not required for M0–M2)
 The compiler already exposes the machinery:
-- AST nodes carry a stable `NodeID` (`include/AST.h`).
-- `CollectChangedNodeIDs(oldAST, newAST)` (`include/ASTDiff.h`) diffs two ASTs.
+- AST nodes carry a stable `NodeID` (`src/frontend/AST.h`).
+- `CollectChangedNodeIDs(oldAST, newAST)` (`src/frontend/ASTDiff.h`) diffs two ASTs.
 - `LintChangedNodesOnly(E, changedIDs)` re-lints only changed subtrees
-  (`include/Lint.h`).
+  (`src/analysis/Lint.h`).
 
 Plan: **do full re-analysis first** (it's cheap without codegen). Only if
 profiling on large files shows it matters, add an incremental path that reuses

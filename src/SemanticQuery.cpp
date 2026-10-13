@@ -1,6 +1,6 @@
 #include "SemanticQuery.hpp"
-#include "ASTVisitor.h"
-#include "Parser.h"
+#include "frontend/ASTVisitor.h"
+#include "frontend/Parser.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -28,7 +28,7 @@ static bool isIdentChar(char c) { return std::isalnum(static_cast<unsigned char>
 // FuncDefExprAST::getName() returns the qualified "Struct.method" for a
 // struct method declaration (the flat name the resolver registers it
 // under), but getNameLoc() deliberately points at just the bare method
-// identifier's own token -- see its doc comment in ASTDecl.h ("Repoint
+// identifier's own token -- see its doc comment in frontend/ASTDecl.h ("Repoint
 // NameLoc at the METHOD name specifically", issue #230). Pairing
 // getNameLoc() with getName().length() as a span therefore overshoots the
 // real identifier into whatever follows it in source (e.g. "new(x: do" for
@@ -1035,7 +1035,7 @@ TriggerContext classifyTrigger(const std::string& text) {
     // '::' or '.' of its own, so without this it would fall through to Bare
     // (keywords/locals/current-file functions) -- wrong, there's no local
     // variable or keyword spelled like a stdlib module name. turf-lang has
-    // no `from X import Y` form (confirmed by reading ParserModule.cpp --
+    // no `from X import Y` form (confirmed by reading frontend/ParserModule.cpp --
     // the only `from` in the grammar is `extern from "lib" fn ...`), so
     // that's the only import shape to detect.
     if (prefixStart > 0) {

@@ -26,7 +26,7 @@ notes behind each feature.
 `CompilerService::analyze()` is one call to `turf::analyze()`. The compiler's
 lexer, parser, resolver and type checker keep their state in process-wide
 globals; the facade is the single place that saves, isolates and restores all of
-it (the compiler's `scripts/check_boundary.sh` enforces that nothing else does).
+it (the compiler's `scripts/check/check_boundary.sh` enforces that nothing else does).
 The call is given:
 
 - the document's text, as the editor has it (not the file on disk);

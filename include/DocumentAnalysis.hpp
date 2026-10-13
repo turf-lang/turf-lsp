@@ -3,8 +3,8 @@
 #include <string>
 #include <vector>
 #include <memory>
-#include "AST.h"
-#include "ResolverSymbolTable.h"
+#include "frontend/AST.h"
+#include "resolve/ResolverSymbolTable.h"
 #include "turf/Analysis.h"
 
 // A diagnostic location in the compiler's own coordinate space (1-indexed
