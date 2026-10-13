@@ -13,7 +13,8 @@
 return {
   cmd = { 'turf-lsp' },
   filetypes = { 'turf' },
-  root_markers = { '.git' },
+  -- turf.toml first: a project's imports resolve from its root.
+  root_markers = { 'turf.toml', '.git' },
   -- Neovim 0.10+ negotiates positionEncoding with the server per the LSP
   -- spec (general.positionEncodings in the client's initialize request);
   -- turf-lsp advertises utf-8 support and Neovim prefers it, so no

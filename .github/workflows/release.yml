@@ -1,7 +1,8 @@
 name: Release
 
 # Pushing a tag `vX.Y.Z` builds and tests the extension for every platform
-# (build.yml), attaches the .vsix files to a GitHub release, and publishes them
+# (build.yml), attaches the .vsix files and the standalone server archives
+# (turf-lsp-<target>-<version>.tar.gz/.zip) to a GitHub release, and publishes the .vsix files
 # to the registries for which a token has been configured as a repository
 # secret. Without a token nothing is published there, and nothing fails:
 #   VSCE_PAT  the Visual Studio Marketplace (VS Code)
@@ -50,7 +51,10 @@ jobs:
       - name: GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.vsix
+          # The .vsix files, and the server archives other editors (and Mason) install.
+          files: |
+            dist/*.vsix
+            dist/turf-lsp-*
           generate_release_notes: true
 
       - name: Publish to the Visual Studio Marketplace

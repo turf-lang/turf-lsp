@@ -52,16 +52,28 @@ jobs:
           sudo apt-get install -y llvm-22-dev cmake ninja-build libzstd-dev zlib1g-dev xvfb
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
 
+      # turf's source is turf-lang's cli/, a mirror of the turf-cli repository;
+      # once cli/ is retired from turf-lang, it comes from turf-cli.
+      - name: turf source (turf-cli, if turf-lang has no cli/)
+        if: hashFiles('turf-lang/cli/go.mod') == ''
+        uses: actions/checkout@v4
+        with:
+          repository: turf-lang/turf-cli
+          path: turf-cli
+      - name: Point the turf build at turf-cli
+        if: hashFiles('turf-lang/cli/go.mod') == ''
+        shell: bash
+        run: echo "TURF_CLI_DIR=$GITHUB_WORKSPACE/turf-cli" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v5
         with:
-          go-version-file: turf-lang/cli/go.mod
+          go-version-file: ${{ hashFiles('turf-lang/cli/go.mod') != '' && 'turf-lang/cli/go.mod' || 'turf-cli/go.mod' }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Build turf (the project-graph helper)
         run: |
-          cd turf-lang/cli
+          cd "${TURF_CLI_DIR:-turf-lang/cli}"
           CGO_ENABLED=0 go build -trimpath -o "$GITHUB_WORKSPACE/out/turf" ./cmd/turf
 
       # --as-needed drops libraries LLVM's metadata names but nothing here uses;
@@ -99,7 +111,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: vsix-${{ env.TARGET }}
-          path: dist/*.vsix
+          path: |
+            dist/*.vsix
+            dist/turf-lsp-*
 
   windows-x64:
     runs-on: windows-latest
@@ -126,9 +140,21 @@ jobs:
             mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-zlib
             mingw-w64-x86_64-zstd mingw-w64-x86_64-python
 
+      # turf's source is turf-lang's cli/, a mirror of the turf-cli repository;
+      # once cli/ is retired from turf-lang, it comes from turf-cli.
+      - name: turf source (turf-cli, if turf-lang has no cli/)
+        if: hashFiles('turf-lang/cli/go.mod') == ''
+        uses: actions/checkout@v4
+        with:
+          repository: turf-lang/turf-cli
+          path: turf-cli
+      - name: Point the turf build at turf-cli
+        if: hashFiles('turf-lang/cli/go.mod') == ''
+        shell: bash
+        run: echo "TURF_CLI_DIR=$GITHUB_WORKSPACE/turf-cli" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v5
         with:
-          go-version-file: turf-lang/cli/go.mod
+          go-version-file: ${{ hashFiles('turf-lang/cli/go.mod') != '' && 'turf-lang/cli/go.mod' || 'turf-cli/go.mod' }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -136,7 +162,7 @@ jobs:
       - name: Build turf
         shell: bash
         run: |
-          cd turf-lang/cli
+          cd "${TURF_CLI_DIR:-turf-lang/cli}"
           mkdir -p "$GITHUB_WORKSPACE/out"
           CGO_ENABLED=0 go build -trimpath -o "$GITHUB_WORKSPACE/out/turf.exe" ./cmd/turf
 
@@ -179,7 +205,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: vsix-${{ env.TARGET }}
-          path: dist/*.vsix
+          path: |
+            dist/*.vsix
+            dist/turf-lsp-*
 
   macos-arm64:
     runs-on: macos-14
@@ -200,16 +228,28 @@ jobs:
           brew install llvm cmake ninja zstd
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
+      # turf's source is turf-lang's cli/, a mirror of the turf-cli repository;
+      # once cli/ is retired from turf-lang, it comes from turf-cli.
+      - name: turf source (turf-cli, if turf-lang has no cli/)
+        if: hashFiles('turf-lang/cli/go.mod') == ''
+        uses: actions/checkout@v4
+        with:
+          repository: turf-lang/turf-cli
+          path: turf-cli
+      - name: Point the turf build at turf-cli
+        if: hashFiles('turf-lang/cli/go.mod') == ''
+        shell: bash
+        run: echo "TURF_CLI_DIR=$GITHUB_WORKSPACE/turf-cli" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v5
         with:
-          go-version-file: turf-lang/cli/go.mod
+          go-version-file: ${{ hashFiles('turf-lang/cli/go.mod') != '' && 'turf-lang/cli/go.mod' || 'turf-cli/go.mod' }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Build turf
         run: |
-          cd turf-lang/cli
+          cd "${TURF_CLI_DIR:-turf-lang/cli}"
           CGO_ENABLED=0 go build -trimpath -o "$GITHUB_WORKSPACE/out/turf" ./cmd/turf
 
       # -dead_strip_dylibs: record only the libraries something actually uses.
@@ -246,4 +286,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: vsix-${{ env.TARGET }}
-          path: dist/*.vsix
+          path: |
+            dist/*.vsix
+            dist/turf-lsp-*

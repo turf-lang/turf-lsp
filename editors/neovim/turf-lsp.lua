@@ -29,8 +29,9 @@ function M.setup(opts)
       default_config = {
         cmd = opts.cmd or { 'turf-lsp' },
         filetypes = { 'turf' },
+        -- turf.toml first: a project's imports resolve from its root.
         root_dir = function(fname)
-          return lspconfig.util.find_git_ancestor(fname) or vim.loop.os_homedir()
+          return lspconfig.util.root_pattern('turf.toml', '.git')(fname) or vim.loop.os_homedir()
         end,
         settings = {},
       },

@@ -67,7 +67,17 @@ path or `TURF_HOME`.
 
 ## Upstreaming
 
-Not done in this pass: submitting a `turf_ls` entry to `nvim-lspconfig`
-upstream so it's registered out of the box. That's a PR against an
-external repo, left for a maintainer to send when ready, not something to
-do unprompted from here.
+[`upstream/`](upstream/) holds the two files to submit once a release
+(`vX.Y.Z` tag, see [`release.yml`](../../.github/workflows/release.yml)) has
+published the server archives `turf-lsp-<platform>-<version>.tar.gz/.zip`:
+
+- [`upstream/mason-registry/packages/turf-lsp/package.yaml`](upstream/mason-registry/packages/turf-lsp/package.yaml)
+  as a PR to [mason-org/mason-registry](https://github.com/mason-org/mason-registry)
+  (set `source.id` to the release's tag). Then `:MasonInstall turf-lsp` works.
+- [`upstream/nvim-lspconfig/lsp/turf_ls.lua`](upstream/nvim-lspconfig/lsp/turf_ls.lua)
+  as a PR to [neovim/nvim-lspconfig](https://github.com/neovim/nvim-lspconfig)
+  (the file goes at `lsp/turf_ls.lua`). Then `vim.lsp.enable('turf_ls')` works
+  with no copied config, and mason-lspconfig maps `turf-lsp` to it.
+
+Both need the repository to be public and a release to exist. The filetype
+line above stays the user's job either way: Neovim reads `.tr` as `nroff`.

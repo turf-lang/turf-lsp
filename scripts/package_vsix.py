@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Assemble and package the VS Code extension for ONE platform.
+"""Assemble and package the VS Code extension for ONE platform, and the same
+server as a standalone archive for other editors.
 
 The extension carries its own language server and standard library, so that
 installing it is all a user does. That only works if the server binary needs
@@ -28,6 +29,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -146,6 +148,20 @@ def main():
     if missing:
         sys.exit("the package is missing: " + ", ".join(missing))
     print("packaged %s (%d bytes, %d files)" % (vsix, vsix.stat().st_size, len(names)))
+
+    # 5. The same server/ for every other editor (Neovim, Emacs, Helix, ...; Mason
+    #    installs it from the release): turf-lsp-<target>-<version>/{bin,lib/std}.
+    top = "turf-lsp-%s-%s" % (args.target, version)
+    if os_name == "win32":
+        archive = (args.out / (top + ".zip")).resolve()
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+            for p in sorted(server_dir.rglob("*")):
+                z.write(p, pathlib.PurePosixPath(top, p.relative_to(server_dir).as_posix()))
+    else:
+        archive = (args.out / (top + ".tar.gz")).resolve()
+        with tarfile.open(archive, "w:gz") as t:
+            t.add(server_dir, arcname=top)
+    print("server archive %s (%d bytes)" % (archive, archive.stat().st_size))
 
 
 if __name__ == "__main__":

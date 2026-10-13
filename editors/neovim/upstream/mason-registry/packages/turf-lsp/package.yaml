@@ -1,0 +1,29 @@
+---
+name: turf-lsp
+description: Language server for the Turf programming language.
+homepage: https://github.com/turf-lang/turf-lsp
+licenses:
+  - Apache-2.0
+languages:
+  - Turf
+categories:
+  - LSP
+
+source:
+  id: pkg:github/turf-lang/turf-lsp@v0.1.0
+  asset:
+    - target: linux_x64_gnu
+      file: turf-lsp-linux-x64-{{ version | strip_prefix "v" }}.tar.gz
+      bin: turf-lsp-linux-x64-{{ version | strip_prefix "v" }}/bin/turf-lsp
+    - target: darwin_arm64
+      file: turf-lsp-darwin-arm64-{{ version | strip_prefix "v" }}.tar.gz
+      bin: turf-lsp-darwin-arm64-{{ version | strip_prefix "v" }}/bin/turf-lsp
+    - target: win_x64
+      file: turf-lsp-win32-x64-{{ version | strip_prefix "v" }}.zip
+      bin: turf-lsp-win32-x64-{{ version | strip_prefix "v" }}/bin/turf-lsp.exe
+
+bin:
+  turf-lsp: "{{source.asset.bin}}"
+
+neovim:
+  lspconfig: turf_ls
