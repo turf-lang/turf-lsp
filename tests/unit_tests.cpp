@@ -52,6 +52,10 @@ struct Scratch {
         std::random_device rd;
         root = fs::temp_directory_path() / ("turf-lsp-unit-" + std::to_string(rd()));
         fs::create_directories(root);
+        // The server canonicalizes project paths; macOS's temp directory is
+        // /var/folders/..., a symlink into /private/var, so expectations built
+        // from the uncanonical root would never match.
+        root = fs::canonical(root);
     }
     ~Scratch() {
         std::error_code ec;
