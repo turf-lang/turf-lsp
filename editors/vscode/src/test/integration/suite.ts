@@ -131,7 +131,10 @@ export async function run(): Promise<void> {
         const std = await vscode.commands.executeCommand<Array<vscode.Location | vscode.LocationLink>>('vscode.executeDefinitionProvider', doc.uri, at(doc, 'printline', 3));
         assert.ok(std.length && target(std[0]).fsPath.endsWith('io.tr'), `stdlib definition: ${JSON.stringify(std)}`);
         // Not the TURF_HOME of whoever runs this test: the library the extension carries.
-        assert.ok(target(std[0]).fsPath.startsWith(path.join(extension.extensionPath, 'server', 'lib', 'std')),
+        // Both sides resolved: on Windows one may be an 8.3 short path with a
+        // lowercase drive (c:\Users\RUNNER~1\...) and the other the long form.
+        const real = (p: string) => fs.realpathSync.native(p).toLowerCase();
+        assert.ok(real(target(std[0]).fsPath).startsWith(real(path.join(extension.extensionPath, 'server', 'lib', 'std'))),
             `the standard library came from ${target(std[0]).fsPath}, not the bundled one`);
     });
 
