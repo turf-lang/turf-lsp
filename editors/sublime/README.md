@@ -1,8 +1,38 @@
-# Turf Language Server - Sublime Text Integration
+# Turf in Sublime Text
 
-Config snippet only, via the `LSP` package. Install `LSP`
-(Package Control), then add a `Packages/User/LSP.sublime-settings` (Sublime
-menu: `Preferences > Package Settings > LSP > Settings`):
+Configuration for the [`LSP`](https://packagecontrol.io/packages/LSP) package;
+nothing else to install.
+
+Get the server first: take `turf-lsp-<platform>-<version>` from a
+[release](https://github.com/turf-lang/turf-lsp/releases) and use the full path to
+`bin/turf-lsp` in `command` below, or put `bin/` on your `PATH`. Keep the archive's
+layout: the server finds the standard library at `../lib/std` from its own
+directory. See the [main README](../../README.md#other-editors).
+
+## 1. A syntax for `.tr` files
+
+The `LSP` package attaches a server to buffers by their syntax scope, and Sublime
+has no Turf syntax. Without one the server never starts. Save this as
+`Packages/User/Turf.sublime-syntax` (Preferences > Browse Packages...). It defines
+the scope and the file extension and highlights nothing:
+
+```yaml
+%YAML 1.2
+---
+name: Turf
+file_extensions: [tr]
+scope: source.turf
+contexts:
+  main: []
+```
+
+The TextMate grammar in `editors/vscode/syntaxes/turf.tmLanguage.json` is not a
+`.sublime-syntax` file and cannot be dropped in. If you write a fuller syntax, keep
+`scope: source.turf`.
+
+## 2. Register the server
+
+Open Preferences > Package Settings > LSP > Settings and add:
 
 ```json
 {
@@ -16,18 +46,9 @@ menu: `Preferences > Package Settings > LSP > Settings`):
 }
 ```
 
-The server finds the standard library next to itself when it sits in a `bin/`
-directory with `../lib/std` (see the [main README](../../README.md)), so no
-`TURF_HOME` is needed. To use a different installation's library, add
-`"env": {"TURF_HOME": "/path/to/turf/home"}` alongside `"command"`.
+To take the standard library from a different installation, add
+`"env": {"TURF_HOME": "/path/to/turf/home"}` next to `command`.
 
-## Syntax highlighting gap
-
-This client-registration snippet is spec-compliant and sufficient for
-diagnostics/hover/completion/go-to-def, but the `source.turf` scope it
-selects on doesn't exist in Sublime yet — there's no shipped Sublime
-syntax definition for Turf. `syntaxes/turf.tmLanguage.json` (the grammar
-used by the VS Code extension) is **not** a drop-in Sublime
-`.sublime-syntax` file; porting or converting it is unstarted, out of
-scope for this pass. Until that exists, `.tr` files get LSP features but
-plain-text highlighting.
+Diagnostics, hover, completion, go to definition, references, rename and formatting
+then work through the package's own commands. The server's semantic tokens are not
+used by Sublime, so highlighting is whatever the syntax gives.
