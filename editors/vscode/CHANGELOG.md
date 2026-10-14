@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1
+
+- Linux: the bundled server runs on glibc 2.35 and newer (Ubuntu 22.04,
+  Debian 12 and later). 1.0.0's needed glibc 2.38 and did not start on them.
+- The extension's icon is TurfLang's logo.
+
 ## 1.0.0
 
 First release. The extension is self-contained: the language server and the
