@@ -32,8 +32,9 @@ async function main(): Promise<void> {
     const vscodeExecutablePath = await downloadAndUnzipVSCode(process.env.VSCODE_VERSION || 'stable');
     const [cli, ...cliArgs] = resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath);
 
+    const asRoot = process.getuid?.() === 0;
     const install = spawnSync(cli, [...cliArgs, '--extensions-dir', extensionsDir, '--user-data-dir', userDataDir,
-        '--install-extension', path.resolve(vsix), '--force'],
+        ...(asRoot ? ['--no-sandbox'] : []), '--install-extension', path.resolve(vsix), '--force'],
         // `input`: under WSL the downloaded Linux CLI asks "use it anyway? [y/N]".
         { encoding: 'utf8', shell: process.platform === 'win32', input: 'y\n' });
     process.stdout.write(install.stdout ?? '');
@@ -54,7 +55,10 @@ async function main(): Promise<void> {
         extensionTestsPath: path.resolve(__dirname, 'suite'),
         extensionTestsEnv: { TURF_IT_WORKSPACE: workspace },
         launchArgs: [workspace, '--extensions-dir', extensionsDir, '--user-data-dir', userDataDir,
-            '--disable-workspace-trust', '--skip-welcome', '--skip-release-notes', '--disable-gpu'],
+            '--disable-workspace-trust', '--skip-welcome', '--skip-release-notes', '--disable-gpu',
+            // Chromium will not start as root with its sandbox on; CI's Linux
+            // job runs in a container as root (build.yml), a desktop never does.
+            ...(asRoot ? ['--no-sandbox'] : [])],
     });
 }
 

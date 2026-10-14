@@ -27,9 +27,27 @@ env:
 jobs:
   linux-x64:
     runs-on: ubuntu-latest
+    # The server runs on the glibc of the system it is built on and anything
+    # newer, so it is built in the oldest image the compiler's own Linux
+    # archive supports, not on the runner (ubuntu-latest's glibc gave a 1.0.0
+    # server that needed GLIBC_2.38 and did not start on Ubuntu 22.04 or
+    # Debian 12). "The glibc floor" below checks the result.
+    container: ubuntu:22.04
     env:
       TARGET: linux-x64
+      GLIBC_FLOOR: "2.35"
     steps:
+      # A bare image, the job running as root: sudo is installed so the steps
+      # read as on a runner. The X and GTK libraries are what VS Code (Electron)
+      # needs to start under xvfb for the last step.
+      - name: Prepare the container
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y sudo wget curl gnupg lsb-release ca-certificates \
+            software-properties-common build-essential git python3 binutils xvfb xauth \
+            libnss3 libatk1.0-0 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2 libxss1 libxkbfile1 libsecret-1-0
+          git config --global --add safe.directory '*'
+
       - uses: actions/checkout@v4
         with:
           path: turf-lsp
@@ -85,6 +103,15 @@ jobs:
             -DLLVM_USE_STATIC_ZSTD=ON -DZLIB_USE_STATIC_LIBS=ON \
             -DCMAKE_EXE_LINKER_FLAGS="-Wl,--as-needed -static-libstdc++ -static-libgcc"
           cmake --build build --parallel
+
+      - name: The glibc floor
+        run: |
+          need=$(objdump -T build/turf-lsp | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)
+          echo "turf-lsp needs glibc $need; the floor is $GLIBC_FLOOR"
+          if [ "$(printf '%s\n%s\n' "$need" "$GLIBC_FLOOR" | sort -V | tail -1)" != "$GLIBC_FLOOR" ]; then
+            echo "::error::turf-lsp needs glibc $need, newer than the supported $GLIBC_FLOOR"
+            exit 1
+          fi
 
       - name: Unit tests, grammar check
         run: |
