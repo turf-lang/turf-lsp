@@ -28,6 +28,11 @@ name: Compiler sync
 # turf-lang is public, so this workflow's own token checks it out. Should it go
 # private, add a repository secret TURFLANG_TOKEN (read access to
 # turf-lang/turf-lang's contents) and it is used instead.
+#
+# The issue is made as the org's GitHub App, turflang[bot], when the
+# variable TURF_BOT_CLIENT_ID and the secret TURF_BOT_PRIVATE_KEY are set
+# (Issues: read and write; Actions: read, for the failed steps), and as
+# github-actions[bot] otherwise.
 
 on:
   schedule:
@@ -169,11 +174,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      GH_TOKEN: ${{ github.token }}
       RESULT: ${{ needs.sync.result }}
       SHA: ${{ needs.sync.outputs.sha }}
     steps:
+      # Issues are filed as the turf-lang org's GitHub App (turflang[bot]) when
+      # the org has set it up: variable TURF_BOT_CLIENT_ID, secret
+      # TURF_BOT_PRIVATE_KEY. Without them, or if the token cannot be made, as
+      # github-actions[bot].
+      - name: The bot's token
+        id: bot
+        if: vars.TURF_BOT_CLIENT_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.TURF_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.TURF_BOT_PRIVATE_KEY }}
       - name: Open, update or close the "Compiler sync broken" issue
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || github.token }}
         run: |
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           sha_text="${SHA:-unknown (the checkout failed)}"
