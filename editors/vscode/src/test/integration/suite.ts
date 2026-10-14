@@ -177,15 +177,17 @@ export async function run(): Promise<void> {
         assert.ok(names.includes('add') && names.includes('main'), `outline: ${names}`);
     });
 
+    // `json`, not `io`: io is in the prelude and never needs an import (smoke.py's
+    // t_code_action_add_missing_import uses the same example).
     test('quick fix: add a missing import, placed with the others', async () => {
-        const uri = write(path.join(project, 'src', 'noimport.tr'), 'import math;\n\nfn main(): int {\n    io::printline("hi");\n    return 0;\n}\n');
+        const uri = write(path.join(project, 'src', 'noimport.tr'), 'import math;\n\nfn main(): int {\n    json::parse("1");\n    return 0;\n}\n');
         const doc = await open(uri);
         const diags = await waitFor('E031', () => { const d = vscode.languages.getDiagnostics(doc.uri).filter(x => String(typeof x.code === 'object' ? x.code.value : x.code) === 'E031'); return d.length ? d : undefined; });
         const actions = await vscode.commands.executeCommand<vscode.CodeAction[]>('vscode.executeCodeActionProvider', doc.uri, diags[0].range);
-        const fix = actions.find(a => a.title === 'Add `import io;`');
+        const fix = actions.find(a => a.title === 'Add `import json;`');
         assert.ok(fix && fix.edit, `no quick fix; got ${actions.map(a => a.title)}`);
         await vscode.workspace.applyEdit(fix.edit);
-        assert.ok(doc.getText().startsWith('import math;\nimport io;\n'), doc.getText().slice(0, 40));
+        assert.ok(doc.getText().startsWith('import math;\nimport json;\n'), doc.getText().slice(0, 40));
     });
 
     test('tasks: build, check, run and test exist for the project', async () => {
