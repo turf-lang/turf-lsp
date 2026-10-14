@@ -950,8 +950,11 @@ def t_version_reports_the_stdlib(c, d):
     lines = out.stdout.splitlines()
     check(lines[0].startswith("turf-lsp "), "first line is not the version: %r" % lines[:1])
     check(any(l.startswith("compiler ") for l in lines), "no compiler revision line: %r" % lines)
+    # Compared with `/` for `\\` and case folded: on Windows the server prints the
+    # native form (D:\a\...) and Python's msys path may be D:/a/....
+    norm = lambda p: p.replace("\\", "/").casefold()
     root = str(staged.parent.parent)
-    check(any(l.startswith("stdlib " + root) for l in lines),
+    check(any(norm(l).startswith(norm("stdlib " + root)) for l in lines),
           "--version does not report the stdlib next to the server (%s): %r" % (root, lines))
 
 
