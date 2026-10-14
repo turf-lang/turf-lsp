@@ -14,7 +14,9 @@ configure.
 - Quick fixes: add a missing import, organize imports, prefix an unused variable.
 - Formatting (whole document or selection), changing only the lines that differ.
 - Projects: imports resolve through the project's package graph (`turf graph`):
-  own modules under `src/`, path and git dependencies, `tests/`.
+  own modules under `src/`, path and git dependencies, `tests/`. The server
+  never uses the network, so a git dependency resolves once `turf fetch` or a
+  build has fetched it.
 - Unsaved edits to one file are seen by files that import it.
 - Run, Build, Check and Run Tests as tasks, commands and code lenses; tests in
   the Testing view. These need the Turf toolchain, and say so when it is missing.
