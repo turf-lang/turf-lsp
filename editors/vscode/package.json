@@ -2,7 +2,7 @@
   "name": "turf",
   "displayName": "Turf",
   "description": "The Turf programming language: diagnostics, completion, hover, go to definition, formatting and more, with nothing else to install.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "publisher": "turflang",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -28,7 +28,7 @@
     "vscode": "^1.80.0"
   },
   "turf": {
-    "minServerVersion": "0.1.0"
+    "minServerVersion": "1.0.0"
   },
   "categories": [
     "Programming Languages",

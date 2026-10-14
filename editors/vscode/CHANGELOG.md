@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.0
+## 1.0.0
 
-First release of the self-contained extension: the language server and the
+First release. The extension is self-contained: the language server and the
 standard library are bundled, per platform, so there is nothing to install or
 configure.
 
@@ -20,4 +20,4 @@ configure.
   the Testing view. These need the Turf toolchain, and say so when it is missing.
 - Workspace Trust: analysis works in untrusted workspaces; running code does not.
 
-Minimum language-server version: 0.1.0.
+Minimum language-server version: 1.0.0.

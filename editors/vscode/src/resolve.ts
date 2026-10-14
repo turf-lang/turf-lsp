@@ -131,7 +131,7 @@ export interface ServerVersion {
     warnings: string[];
 }
 
-/** Parses `turf-lsp --version`: `turf-lsp 0.1.0 (LSP protocol 3.17)`, then `compiler`, `stdlib`, `warning:` lines. */
+/** Parses `turf-lsp --version`: `turf-lsp 1.0.0 (LSP protocol 3.17)`, then `compiler`, `stdlib`, `warning:` lines. */
 export function parseServerVersion(stdout: string): ServerVersion | undefined {
     const lines = stdout.split(/\r?\n/);
     const first = /^turf-lsp (\d+\.\d+\.\d+\S*)/.exec(lines[0] ?? '');

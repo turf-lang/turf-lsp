@@ -88,7 +88,7 @@ The result is `dist/turf-win32-x64-<version>.vsix`.
 Extensions view, `...` menu, *Install from VSIX...*):
 
 ```
-code --install-extension C:\src\turf-lsp\dist\turf-win32-x64-0.1.0.vsix
+code --install-extension C:\src\turf-lsp\dist\turf-win32-x64-1.0.0.vsix
 ```
 
 Open a folder, create `hello.tr`, and check, in this order:

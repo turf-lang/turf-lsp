@@ -35,7 +35,7 @@ and point your editor at `<anywhere>/bin/turf-lsp`. `turf-lsp --version` prints
 what it found:
 
 ```
-turf-lsp 0.1.0 (LSP protocol 3.17)
+turf-lsp 1.0.0 (LSP protocol 3.17)
 compiler d54a43c5b6f0
 stdlib /opt/turf (next to the server (../lib/std))
 ```
@@ -117,7 +117,7 @@ drives it (on Linux it needs a display; `xvfb-run -a` in CI):
 
 ```bash
 python3 scripts/package_vsix.py --server build/turf-lsp --turf ../turf-lang/build/turf --stdlib ../turf-lang
-cd editors/vscode && node out/test/integration/runTest.js ../../dist/turf-<target>-0.1.0.vsix
+cd editors/vscode && node out/test/integration/runTest.js ../../dist/turf-<target>-1.0.0.vsix
 ```
 
 `package_vsix.py` refuses a server that links libraries a user's machine may not
