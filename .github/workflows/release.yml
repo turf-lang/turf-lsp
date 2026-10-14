@@ -64,6 +64,10 @@ jobs:
       - name: Publish to Open VSX
         if: env.OVSX_PAT != ''
         run: |
+          # The first publish needs the publisher's namespace to exist; after
+          # that this fails harmlessly ("already exists").
+          publisher=$(node -p "require('./editors/vscode/package.json').publisher")
+          npx --yes ovsx create-namespace "$publisher" -p "$OVSX_PAT" || true
           for vsix in dist/*.vsix; do
             npx --yes ovsx publish "$vsix" -p "$OVSX_PAT"
           done
