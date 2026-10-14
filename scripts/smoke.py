@@ -953,7 +953,9 @@ def t_version_reports_the_stdlib(c, d):
     # Compared with `/` for `\\` and case folded: on Windows the server prints the
     # native form (D:\a\...) and Python's msys path may be D:/a/....
     norm = lambda p: p.replace("\\", "/").casefold()
-    root = str(staged.parent.parent)
+    # Resolved: the server reports the real path, and macOS's temp directory
+    # /var/folders/... is a symlink into /private/var.
+    root = os.path.realpath(staged.parent.parent)
     check(any(norm(l).startswith(norm("stdlib " + root)) for l in lines),
           "--version does not report the stdlib next to the server (%s): %r" % (root, lines))
 
