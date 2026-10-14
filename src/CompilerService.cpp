@@ -57,7 +57,7 @@ private:
 };
 
 // Widens a diagnostic's 1-byte point location to the span of the
-// identifier/token it points at (doc 03 P1.3) -- a whole-token squiggle
+// identifier/token it points at -- a whole-token squiggle
 // reads far better than a caret. The compiler doesn't carry real end-
 // columns yet, so this is a best-effort scan through the line's text, not a
 // real lexer re-tokenization. Falls back to 1 byte whenever there's nothing
@@ -80,7 +80,7 @@ int widenDiagTokenByteLen(LineSource& source, const std::string& filename, int l
 }
 
 // Converts one facade diagnostic into the LSP-shape-agnostic intermediate
-// LSPHandler needs to finish the job (doc 03): resolves the diagnostic's own
+// LSPHandler needs to finish the job: resolves the diagnostic's own
 // (possibly-imported-module) filename, widens its point location, and folds
 // the hint into the message text (LSP has no separate "hint" field). The
 // facade's text is already plain: no terminal color escapes to strip.

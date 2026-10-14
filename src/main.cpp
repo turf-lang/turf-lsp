@@ -126,7 +126,7 @@ int main(int argc, char** argv) {
         Logger::info("turf-lsp: using " + turf + " for project graphs");
     handler.setTurfExecutable(turf);
 
-    // This loop IS the I/O thread (doc 01 P0.1): it only frames messages
+    // This loop IS the I/O thread: it only frames messages
     // and hands them to the handler, which itself only does cheap,
     // non-compiler bookkeeping before returning -- any compiler-touching
     // work handleMessage triggers runs asynchronously on LSPHandler's own

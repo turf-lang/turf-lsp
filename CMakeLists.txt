@@ -81,7 +81,7 @@ set(TURF_SMART OFF CACHE BOOL "Build the --smart model runtime into turfcore")
 add_subdirectory(${TURF_LANG_DIR} turflang_build EXCLUDE_FROM_ALL)
 
 # Link nlohmann_json, turfcore, and the platform thread library (the
-# worker/debounce thread split -- doc 01 P0.1 -- needs std::thread's
+# worker/debounce thread split needs std::thread's
 # underlying implementation linked explicitly on some platforms/toolchains).
 target_link_libraries(turf_lsp_core PUBLIC nlohmann_json::nlohmann_json turfcore Threads::Threads)
 target_link_libraries(turf-lsp PRIVATE turf_lsp_core)

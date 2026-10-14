@@ -341,7 +341,7 @@ std::optional<HoverInfo> SemanticQuery::hover(const DocumentAnalysis& analysis, 
         }
     } else if (auto fnDef = dynamic_cast<const FuncDefExprAST*>(node)) {
         if (auto target = fnDef->getResolvedDef()) {
-            // Overload listing (doc 06 edge case): getResolvedDef() only
+            // Overload listing: getResolvedDef() only
             // carries THIS declaration's own overload, but a bare function
             // NAME (as opposed to a specific call, which already resolved
             // to exactly one via getResolvedCallTarget() above) is
@@ -411,7 +411,7 @@ std::optional<HoverInfo> SemanticQuery::hover(const DocumentAnalysis& analysis, 
             // answering this properly needs a symbol-table lookup hover()
             // doesn't have access to (no `analysis` parameter) -- return no
             // hover rather than a guess, per this function's own edge-case
-            // policy (see doc 06's "unresolved node" rule).
+            // policy (an unresolved node has no hover).
             return std::nullopt;
         }
         const std::string spelled = spelledModule(scopeAccess->getLeftName());
@@ -770,7 +770,7 @@ std::vector<SemanticToken> SemanticQuery::getSemanticTokens(const DocumentAnalys
     return tokens;
 }
 
-// ─── References / document highlight (doc 08) ──────────────────────────────
+// ─── References / document highlight ──────────────────────────────
 
 namespace {
 // Collects ReferenceOccurrence for the 5 node kinds getDeclarationLoc()
@@ -970,7 +970,7 @@ public:
     std::unordered_map<std::string, TurfTypePtr> VariableTypes;
     std::unordered_map<std::string, const StructDeclExprAST*> StructDecls;
     // Declaration line (1-indexed compiler convention) per variable name --
-    // doc 05 G3's scope-distance ranking approximation. Not real scope
+    // the scope-distance ranking approximation. Not real scope
     // depth (this visitor is flat, see the class comment above), just "how
     // many lines away from the cursor was this declared" -- cheap, and a
     // reasonable proxy: a variable declared 2 lines up is far more likely
@@ -1030,7 +1030,7 @@ TriggerContext classifyTrigger(const std::string& text) {
     while (prefixStart > 0 && isIdentChar(text[prefixStart - 1])) prefixStart--;
     std::string prefix = text.substr(prefixStart, pos - prefixStart);
 
-    // `import <prefix>` -- bare module-name completion (doc 05 G2). Checked
+    // `import <prefix>` -- bare module-name completion. Checked
     // before the '::'/'.' checks below because "import net" has no trailing
     // '::' or '.' of its own, so without this it would fall through to Bare
     // (keywords/locals/current-file functions) -- wrong, there's no local
@@ -1580,7 +1580,7 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
 
     TriggerContext ctx = classifyTrigger(lineTextBeforeCursor);
 
-    // `import <prefix>` -- module-name completion (doc 05 G2). Answered from
+    // `import <prefix>` -- module-name completion. Answered from
     // the analysis's own list of what an import here could name, which needs
     // no resolved AST -- an in-progress `import ` line (no `;` yet) is exactly
     // the kind of buffer the patched-reanalysis path may not fully resolve --
@@ -1685,7 +1685,7 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
             item.label = field.Name;
             item.kind = 5; // Field
             item.detail = field.Type ? field.Type->getName() : "";
-            // doc 05 G6 acceptance test: "p. lists its fields then instance
+            // "p. lists its fields then instance
             // methods" -- true of the emission order below already, but a
             // client without an explicit sortText sorts the list
             // alphabetically itself, silently interleaving fields and
@@ -1714,8 +1714,8 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
         return items;
     }
 
-    // Bare word: what is usable unqualified at the cursor. Rank tiers (doc
-    // 05 G6) so a real, specific symbol beats a generic keyword that merely
+    // Bare word: what is usable unqualified at the cursor. Rank tiers
+    // so a real, specific symbol beats a generic keyword that merely
     // sorts earlier alphabetically: "0" locals, "1" this file's functions and
     // types and imported modules, "2" keywords and built-in types, "3"
     // snippets.
@@ -1736,7 +1736,7 @@ std::vector<CompletionItem> SemanticQuery::getCompletions(const DocumentAnalysis
             item.label = sym.Name;
             item.kind = 6;
             item.detail = sym.Type ? sym.Type->getName() : "";
-            // Scope-distance ranking (doc 05 G3): closer declarations first,
+            // Scope-distance ranking: closer declarations first,
             // any declared AFTER the cursor (a real but less-likely-intended
             // match -- e.g. still mid-typing the enclosing function) pushed
             // behind every backward one instead of competing on raw distance.

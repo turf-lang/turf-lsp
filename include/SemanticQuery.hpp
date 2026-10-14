@@ -18,7 +18,7 @@ struct CompletionPlace {
     // The analysed document's path, as the analysis knows it: the key for
     // "what is in scope at the cursor".
     std::string documentPath;
-    // 1-indexed, the compiler's convention; 0 = unknown. Drives doc 05 G3's
+    // 1-indexed, the compiler's convention; 0 = unknown. Drives the
     // scope-distance ranking and the in-scope lookup.
     int line = 0;
     int col = 0;
@@ -39,7 +39,7 @@ struct CompletionItem {
     // insertTextFormat=2 (Snippet, e.g. "method(${1:arg})$0") instead of a
     // plain-text insertion of `label`.
     std::string insertSnippet;
-    // doc 05 G4 (completionItem/resolve): the flat symbol-table name to
+    // completionItem/resolve: the flat symbol-table name to
     // re-look-up on resolve (e.g. "printline", "Point.distance" -- the same
     // key structMethods()/firstOverload() already use), and its owning
     // module ("" = current file). Empty `resolveName` means this item has
@@ -48,7 +48,7 @@ struct CompletionItem {
     // those, so the client never sends a resolve request for them.
     std::string resolveName;
     std::string resolveModule;
-    // doc 05 G3/G6: when non-empty, the client sorts the completion LIST
+    // When non-empty, the client sorts the completion LIST
     // by this string instead of falling back to `label` -- lets a lower-
     // priority-but-alphabetically-earlier entry (e.g. a keyword) rank
     // below a more relevant one (e.g. a local variable) that would
@@ -95,13 +95,12 @@ struct SymbolLocation {
     ResolverSourceLocation loc;
     std::string moduleName;
     // Length of the target's own name at `loc`, for a precise
-    // `targetSelectionRange` (doc 07 P2.5) instead of a 1-char caret.
+    // `targetSelectionRange` instead of a 1-char caret.
     // Defaults to 1 for the rare case a caller doesn't know it better.
     int length = 1;
 };
 
-// A single top-level declaration for textDocument/documentSymbol (doc 08
-// P3.6). `kind` is an LSP SymbolKind (Function=12, Struct=23, Enum=10,
+// A single top-level declaration for textDocument/documentSymbol. `kind` is an LSP SymbolKind (Function=12, Struct=23, Enum=10,
 // Variable=13) -- LSPHandler forwards it as-is.
 struct DocumentSymbolEntry {
     std::string name;
@@ -111,7 +110,7 @@ struct DocumentSymbolEntry {
 };
 
 // A hover result: the rendered markdown plus the span of the hovered token
-// itself (doc 06 P2.1's `range`, so the client underlines exactly the
+// itself (so the client underlines exactly the
 // symbol rather than nothing). `length` is 0 (never rendered as a range by
 // the caller) when the exact span isn't confidently known.
 struct HoverInfo {
@@ -120,7 +119,7 @@ struct HoverInfo {
     int length = 0;
 };
 
-// A single occurrence of a symbol (doc 08 -- find references / document
+// A single occurrence of a symbol (find references / document
 // highlight). `declLoc`/`declModule` together identify WHICH declaration
 // this occurrence resolves to: locals/params are always `declModule ==
 // ""` (VariableSymbol carries no SourceModule of its own -- a local can
@@ -163,7 +162,7 @@ public:
     static std::optional<SymbolLocation> getTypeDefinitionLoc(const DocumentAnalysis& analysis,
                                                                const ExprAST* node);
 
-    // completionItem/resolve support (doc 05 G4): looks up the declaration
+    // completionItem/resolve support: looks up the declaration
     // site of a function/method by its flat symbol-table name (e.g.
     // "printline" or "Point.distance" -- CompletionItem::resolveName) and
     // owning module ("" = current file, matching resolveModule). Returns
@@ -178,7 +177,7 @@ public:
     // findNodeAt) are needed only to disambiguate a ScopeAccessExprAST's two
     // names (`Left::Right`) sharing one node -- every other node kind
     // ignores them. `analysis` is needed only for a FuncDefExprAST with
-    // multiple overloads (doc 06's overload-listing edge case) -- every
+    // multiple overloads -- every
     // other node kind ignores it too.
     static std::optional<HoverInfo> hover(const DocumentAnalysis& analysis, const ExprAST* node,
                                           int cursorLine, int cursorCol);
@@ -194,13 +193,12 @@ public:
     // deliberately NOT recursing into imported-module bodies, same
     // reasoning SemanticTokensVisitor::visitModuleImport documents (those
     // positions belong to a different file's coordinate space). Struct/
-    // enum/field/module-name occurrences aren't tracked yet (doc 08 scope
-    // note) -- only the node kinds getDeclarationLoc() already resolves.
+    // enum/field/module-name occurrences aren't tracked yet -- only the node kinds getDeclarationLoc() already resolves.
     // Used for both documentHighlight (this file only) and as the
     // per-file scan step of workspace-wide references.
     static std::vector<ReferenceOccurrence> findAllReferenceOccurrences(const DocumentAnalysis& analysis);
 
-    // doc 08 P3.6: top-level struct/enum/function declarations in
+    // Top-level struct/enum/function declarations in
     // `analysis`'s own file, for a flat (non-nested) documentSymbol
     // outline. Skips synthetic prelude imports and anything declared
     // inside an imported module's body (same "this file only" scoping
@@ -272,7 +270,7 @@ public:
                                                        const std::string& lineTextBeforeCursor,
                                                        const CompletionPlace& where = {});
 
-    // doc 05 G2's `import mod::<prefix>` case: detects the shape purely
+    // The `import mod::<prefix>` case: detects the shape purely
     // textually (no analysis needed -- `mod` isn't imported into the
     // current file yet, so nothing in ITS symbol table could answer this
     // anyway) by checking that "import" is the whole word immediately

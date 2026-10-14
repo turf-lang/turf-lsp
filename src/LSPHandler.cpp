@@ -76,8 +76,7 @@ struct ScopeExit {
     ~ScopeExit() { if (fn) fn(); }
 };
 
-// Converts a compiler-native diagnostic location to an LSP range (doc 03
-// P1.3/P1.4). `primaryMapper` is built from the document actually being
+// Converts a compiler-native diagnostic location to an LSP range `primaryMapper` is built from the document actually being
 // analyzed's live buffer, so it's only valid for a location IN that same
 // file (`loc.filename == primaryPath`) -- a location the compiler attributed
 // to an imported module points at a file whose buffer isn't loaded here (it
@@ -114,7 +113,7 @@ std::vector<std::string> splitLines(const std::string& text) {
     return lines;
 }
 
-// Doc 06 P2.3's interim (LSP-side) doc-comment source: turf-lang's
+// The doc-comment source for hover and completion resolve: turf-lang's
 // stdlib/showcase code is richly commented immediately above a
 // declaration (AGENTS.md's WHY-comment convention), and hover is the one
 // place a user actually wants to read that prose without opening the
@@ -154,15 +153,12 @@ json jsonRange(const LspRange& r) {
     };
 }
 
-// Builds the response for definition/declaration/typeDefinition (doc 07
-// P2.2/P2.5): a plain `Location` for clients that never declared
-// `linkSupport` (unchanged wire shape from before this), or a one-element
+// Builds the response for definition/declaration/typeDefinition: a plain `Location` for clients that never declared
+// `linkSupport`, or a one-element
 // `LocationLink[]` when they did. `targetRange` is used for both
 // `targetRange` and `targetSelectionRange` -- the whole-declaration range
-// isn't cheaply known separately from the name's own span (see this doc's
-// own note: "targetRange = the whole decl if cheaply known (else same as
-// selection)"), so this is the "else" branch, not a shortcut taken instead
-// of the real thing. `originSelectionRange` reuses SemanticQuery::hover()'s
+// isn't cheaply known separately from the name's own span, so both are the
+// name's span. `originSelectionRange` reuses SemanticQuery::hover()'s
 // per-node-kind span computation purely for its .loc/.length -- the exact
 // same "what's the source span of the thing under the cursor" question
 // hover already answers for every node kind this handles, so recomputing
@@ -277,7 +273,7 @@ void LSPHandler::dispatch(const json& msg) {
     bool req = isRequest(msg);
     json id = req ? msg.value("id", json(nullptr)) : json(nullptr);
 
-    // Protocol conformance (doc 01 P0.4): reject requests before
+    // Protocol conformance: reject requests before
     // `initialize` / after `shutdown` rather than silently mishandling
     // them against not-yet-ready (or torn-down) server state; be lenient
     // for notifications since some clients send a few speculatively.
@@ -375,7 +371,7 @@ void LSPHandler::handleInitialize(const json& request) {
             {"positionEncoding", positionEncodingWireName(m_positionEncoding)},
             {"textDocumentSync", {
                 {"openClose", true},
-                {"change", 2}, // incremental (doc 01 P0.5); range-less change events still fall back to full replace
+                {"change", 2}, // incremental; range-less change events still fall back to full replace
                 {"save", {{"includeText", false}}}
             }},
             {"hoverProvider", true},
@@ -548,7 +544,7 @@ void LSPHandler::handleDidClose(const json& notification) {
 
     // Clear squiggles this document's own uri was carrying, plus any
     // imported-module uris its last analysis pass attributed diagnostics to
-    // (doc 03 P1.4) -- best-effort: if another still-open document also
+    // -- best-effort: if another still-open document also
     // imports the same module and legitimately still has diagnostics to
     // report there, its own next publish will re-assert them. There is no
     // cross-primary reference counting here; this is a deliberate
@@ -863,7 +859,7 @@ void LSPHandler::scheduleDebouncedDiagnostics(const std::string& uri, int64_t ve
         // Overwrites any earlier pending entry for this uri -- this IS the
         // coalescing: a burst of keystrokes just keeps pushing the due
         // time out, so only the last edit in a quiet-period window ever
-        // gets analyzed/published (doc 01 P0.1).
+        // gets analyzed/published.
         m_pendingDebounce[uri] = PendingDebounce{version, std::chrono::steady_clock::now() + m_debounceDelay};
     }
     m_debounceCv.notify_all();
@@ -927,8 +923,7 @@ void LSPHandler::doPublishDiagnostics(std::string uri) {
     std::string primaryPath = uriToPath(uri);
     PositionMapper mapper(textSnap->text, m_positionEncoding);
 
-    // Group by which real file each diagnostic belongs to (doc 03
-    // "Multi-file"): most land on primaryPath, but one raised while
+    // Group by which real file each diagnostic belongs to: most land on primaryPath, but one raised while
     // resolving an `import`ed module is attributed to THAT file's path and
     // must be published against its own uri, not the primary document's.
     std::map<std::string, std::vector<json>> byFile;
@@ -1187,7 +1182,7 @@ void LSPHandler::doHover(json id, std::string uri, LspPosition pos, std::shared_
     if (node) {
         auto info = SemanticQuery::hover(*analysis, node, compLine, compCol);
         if (info) {
-            // Doc-comment (doc 06 P2.3, interim LSP-side source rescan):
+            // Doc-comment:
             // reuses getDeclarationLoc() -- same query doDefinition() uses
             // to find WHERE a symbol is declared -- to find WHAT file/line
             // to scan backward from. Only the node kinds that resolve a
@@ -1283,7 +1278,7 @@ void LSPHandler::doDefinition(json id, std::string uri, LspPosition pos, std::sh
                 // only one where a preceding non-ASCII character on the
                 // line could otherwise throw the column off.
                 // Target selection width now uses the real name length
-                // (doc 07 P2.5) instead of a 1-char caret, wherever
+                // instead of a 1-char caret, wherever
                 // getDeclarationLoc() knows it.
                 int len = std::max(declLocOpt->length, 1);
                 LspRange range;
@@ -1303,7 +1298,7 @@ void LSPHandler::doDefinition(json id, std::string uri, LspPosition pos, std::sh
 // Same shape as doDefinition() above -- only the query (getTypeDefinitionLoc
 // instead of getDeclarationLoc) and the range width differ. Kept as its own
 // function rather than a shared helper parameterized on the query: the two
-// are similar today but doc 07 expects them to diverge further (declaration
+// are similar today but they are expected to diverge further (declaration
 // vs. definition's extern-decl split doesn't apply here at all; typeDefinition
 // has its own edge cases -- e.g. a builtin/primitive type has no decl node to
 // find, already handled by getTypeDefinitionLoc() returning nullopt for it).
@@ -1362,9 +1357,9 @@ void LSPHandler::doTypeDefinition(json id, std::string uri, LspPosition pos, std
     sendResponse(id, result);
 }
 
-// doc 08 P3.3: every occurrence of the symbol under the cursor, restricted
+// Every occurrence of the symbol under the cursor, restricted
 // to the current file -- no workspace scan needed, unlike doReferences()
-// below. Read/Write distinction (doc's own edge case) isn't implemented --
+// below. The Read/Write distinction isn't implemented --
 // every highlight comes back plain (LSP `kind` omitted, which the spec
 // defaults to Text=1), a real scope cut, not an oversight: telling a
 // declaration/use apart from an assignment LHS specifically would need
@@ -1408,16 +1403,14 @@ void LSPHandler::doDocumentHighlight(json id, std::string uri, LspPosition pos, 
     sendResponse(id, result);
 }
 
-// doc 08 P3.5: workspace-wide references. Scans every file WorkspaceIndex
-// enumerated (doc 01 P0.6) plus the current document, running a completely
+// Workspace-wide references. Scans every file WorkspaceIndex
+// enumerated plus the current document, running a completely
 // fresh, independent analyze() on each (never stored back via
 // setAnalysis() -- these aren't the document being edited) and matching
 // occurrences by identity: (declLoc, declModule resolved to an absolute
 // path FROM THAT FILE's own position). No persistent OccurrenceTable /
-// incremental invalidation (doc 08's P3.2/P3.4 as originally scoped) --
-// a full per-request scan instead, which the plan doc itself calls out as
-// "fine for typical project sizes" pending real dogfooding evidence it
-// isn't.
+// incremental invalidation -- a full per-request scan instead, which
+// is fine for typical project sizes (ARCHITECTURE.md, "References and rename").
 std::optional<std::vector<LSPHandler::FoundOccurrence>> LSPHandler::collectWorkspaceOccurrences(
     const std::string& uri, LspPosition pos, const std::function<bool()>& cancelled, bool& outCancelled) {
     outCancelled = false;
@@ -1516,7 +1509,7 @@ std::optional<std::vector<LSPHandler::FoundOccurrence>> LSPHandler::collectWorks
     return results;
 }
 
-// doc 08 P3.5: workspace-wide references, now a thin wrapper over
+// Workspace-wide references, a thin wrapper over
 // collectWorkspaceOccurrences() (shared with doRename() -- rename IS
 // find-references + text replacement, see that function's own comment).
 void LSPHandler::doReferences(json id, std::string uri, LspPosition pos, bool includeDeclaration,
@@ -1577,10 +1570,10 @@ bool isValidIdentifier(const std::string& name) {
 }
 } // namespace
 
-// doc 10 P4.1: prepareRename -- validity check + the exact renameable
+// prepareRename -- validity check + the exact renameable
 // range, reusing hover()'s per-node-kind span computation for its
 // .loc/.length exactly like buildDefinitionResult()'s originSelectionRange
-// does (doc 07), rather than a third dynamic_cast chain answering the same
+// does, rather than a third dynamic_cast chain answering the same
 // "what's the span of the thing under the cursor" question.
 void LSPHandler::doPrepareRename(json id, std::string uri, LspPosition pos,
                                   std::shared_ptr<std::atomic<bool>> cancelFlag) {
@@ -1608,7 +1601,7 @@ void LSPHandler::doPrepareRename(json id, std::string uri, LspPosition pos,
         auto target = SemanticQuery::getDeclarationLoc(node);
         // Reject: unresolved (typo/mid-edit), a builtin/synthetic decl
         // ({0,0} -- assert, primitive-type methods, ...), or a stdlib
-        // symbol (doc 10's own stdlib guard -- the user can't
+        // symbol (the user can't
         // meaningfully edit lib/std, and a stdlib rename would desync
         // the toolchain).
         if (target && target->loc.Line > 0) {
@@ -1628,14 +1621,13 @@ void LSPHandler::doPrepareRename(json id, std::string uri, LspPosition pos,
     sendResponse(id, result);
 }
 
-// doc 10 P4.2: rename -- find-references (via the same
+// rename -- find-references (via the same
 // collectWorkspaceOccurrences() doReferences() uses) + text replacement,
-// with the safety checks doc 10 calls out explicitly: `newName` must be a
+// with some safety checks: `newName` must be a
 // legal identifier and not a reserved keyword/type name; same-name
 // rename is a no-op; stdlib symbols are refused. Deliberately NOT
 // implemented: the deeper "would newName collide with an existing
-// declaration visible in any affected scope" conflict check doc 10 also
-// wants -- that needs a real per-scope visibility query this session's
+// declaration visible in any affected scope" conflict check, which needs a real per-scope visibility query this session's
 // identity model (declLoc + module) doesn't answer, a meaningfully
 // bigger feature than the rest of this function; left for future work
 // rather than attempted as a shortcut that could silently rename INTO a
@@ -1724,7 +1716,7 @@ namespace {
 // deliberately treated as data here: there is exactly one backtick span
 // starting with "import " in this error's hint, by construction of the
 // error class itself, so this is a stable join, not the brittle
-// whole-message matching doc 03 warns about for codeless syntax errors.
+// whole-message matching that would be for codeless syntax errors.
 std::optional<std::string> extractImportSuggestion(const std::string& diagnosticMessage) {
     static const std::string marker = "`import ";
     size_t start = diagnosticMessage.find(marker);
@@ -1739,8 +1731,7 @@ std::optional<std::string> extractImportSuggestion(const std::string& diagnostic
 // diagnostics/ErrorsFlow.h) -- a lint WARNING, which (unlike a typed TurfError)
 // never carries a stable E0NN code (TurfWarning::warn() doesn't pass one
 // to DiagnosticEngine::add() at all), so this is necessarily a message-
-// pattern match, the documented fallback for exactly this situation
-// (doc 03's "Coded vs. codeless diagnostics"). Returns the variable name
+// pattern match, the documented fallback for exactly this situation. Returns the variable name
 // on a match.
 std::optional<std::string> extractUnusedVariableName(const std::string& diagnosticMessage) {
     static const std::string prefix = "Variable '";
@@ -1752,12 +1743,11 @@ std::optional<std::string> extractUnusedVariableName(const std::string& diagnost
 }
 } // namespace
 
-// doc 10 P4.3/P4.4 (code actions): two mechanical, message/code-driven
+// Code actions: two mechanical, message/code-driven
 // quick-fixes picked specifically because each is safe and cheap enough
 // to compute eagerly, with no `codeAction/resolve` round trip needed --
-// "enumerate all 68 E0NN codes and build a full table" (the doc's own
-// "Task 0") was explicitly NOT attempted; these two are a real, narrow
-// slice of that eventual table, not a stand-in for it.
+// a full table of fixes for every E0NN code is not attempted; these two are
+// a narrow slice of it, not a stand-in for it.
 void LSPHandler::doCodeAction(json id, std::string uri, json diagnostics,
                                std::shared_ptr<std::atomic<bool>> cancelFlag) {
     std::string idKey = id.dump();
@@ -1896,7 +1886,7 @@ std::optional<json> LSPHandler::importAction(const std::string& uri, const std::
                 {"edit", {{"changes", {{uri, json::array({edit})}}}}}};
 }
 
-// doc 08 P3.6 (bonus): a flat outline of the current file's top-level
+// A flat outline of the current file's top-level
 // struct/enum/function declarations as SymbolInformation (the simpler,
 // non-hierarchical DocumentSymbol response variant -- nesting fields/
 // methods under their owning struct is explicitly left for later, this
@@ -1931,16 +1921,11 @@ void LSPHandler::doDocumentSymbol(json id, std::string uri, std::shared_ptr<std:
     sendResponse(id, symbols);
 }
 
-// doc 09 P4.3: textDocument/formatting, reusing turf-lang's
-// turf::format::format() in-process (the SAME implementation `turf
-// --format` uses -- see that engine's own doc comment for the "one
-// implementation, two callers" rationale). Ships the simplest CORRECT
-// response shape: a single TextEdit spanning the whole document, not a
-// minimal line-level diff (doc 09's own text: "A single full-replace
-// edit is *allowed* but churns the client's cursor/undo; prefer a
-// minimal diff" -- explicitly allowed, just not the nicer option; a
-// real scope cut for this pass, not an oversight). No analyze() call
-// needed at all -- formatting is a pure function of the raw text, so
+// textDocument/formatting and rangeFormatting, reusing turf-lang's
+// formatter in-process (the same implementation `turf fmt` uses). The
+// response is the minimal line-level diff, not a whole-document
+// replacement, so the client's cursor and undo history stay put. No
+// analyze() call is needed at all -- formatting is a pure function of the raw text, so
 // this doesn't even touch the worker's usual ensureFreshAnalysis() path.
 void LSPHandler::doFormatting(json id, std::string uri, bool insertSpaces, int tabSize,
                                std::shared_ptr<std::atomic<bool>> cancelFlag, int rangeStartLine,
@@ -2071,8 +2056,8 @@ void LSPHandler::doSemanticTokens(json id, std::string uri, std::shared_ptr<std:
     PositionMapper mapper(textSnap->text, m_positionEncoding);
     std::vector<int> data = computeSemanticTokenData(*analysis, mapper);
 
-    // Cached for a later full/delta request against this same uri (doc 04
-    // P1.d) -- worker-thread-only state, see the member's own doc comment.
+    // Cached for a later full/delta request against this same uri
+    // -- worker-thread-only state, see the member's own doc comment.
     std::string resultId = std::to_string(++m_nextSemanticTokensResultId);
     m_semanticTokensCache[uri] = CachedSemanticTokens{resultId, data};
 
@@ -2153,7 +2138,7 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
         int compLine, compCol;
         mapper.toCompilerLineCol(pos, compLine, compCol);
 
-        // `import mod::<prefix>` (doc 05 G2's other half): `mod` isn't
+        // `import mod::<prefix>` `mod` isn't
         // imported into THIS document yet -- that's literally what this
         // statement is doing -- so its exported symbols can't come from
         // this document's own symbol table at all, unlike every other
@@ -2262,7 +2247,7 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
                 lspItem["additionalTextEdits"] = json::array(
                     {{{"range", {{"start", position}, {"end", position}}}, {"newText", at.text}}});
             }
-            // doc 05 G4: carries just enough to re-resolve this exact
+            // Carries just enough to re-resolve this exact
             // symbol later, without eagerly paying for the doc-comment
             // file read every item in a (possibly large) list would cost.
             // Omitted entirely for items with nothing to resolve (keywords,
@@ -2277,7 +2262,7 @@ void LSPHandler::doCompletion(json id, std::string uri, LspPosition pos, std::sh
     sendResponse(id, {{"isIncomplete", false}, {"items", items}});
 }
 
-// doc 05 G4: fills in `documentation` (the function/method's doc-comment)
+// Fills in `documentation` (the function/method's doc-comment)
 // on a single completion item, lazily -- doCompletion() deliberately never
 // pays for this eagerly (an extra source scan, possibly a cross-file disk
 // read, per item in a list that can have dozens of entries). Returns

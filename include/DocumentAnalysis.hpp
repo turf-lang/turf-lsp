@@ -10,9 +10,8 @@
 // A diagnostic location in the compiler's own coordinate space (1-indexed
 // line/col, byte column) plus the real on-disk file it belongs to -- NOT
 // necessarily the document that was analyzed, since an error can surface
-// while resolving an `import`ed module (doc 03 "Multi-file"). `byteLen` is
-// the widened span of the identifier/token under the point location (doc 03
-// P1.3): the compiler doesn't track real end-columns yet (SourceLocation's
+// while resolving an `import`ed module. `byteLen` is
+// the widened span of the identifier/token under the point location: the compiler doesn't track real end-columns yet (SourceLocation's
 // EndLine/EndCol stay at their -1 sentinel), so this is a buffer-scan
 // best-effort widen, falling back to 1 byte for anything that isn't
 // alnum/underscore at that position (punctuation, EOF, a hand-built {0,0}
@@ -34,7 +33,7 @@ struct MappedRelatedInfo {
 struct MappedDiagnostic {
     MappedDiagLocation loc;
     bool isWarning = false;
-    std::string code;    // empty for the untyped LogErrorAt() raw path (doc 03)
+    std::string code;    // empty for the untyped LogErrorAt() raw path
     std::string message; // Diag.Msg, with "\nhint: ..." appended if Diag.Hint is non-empty
     std::vector<MappedRelatedInfo> related;
 };
