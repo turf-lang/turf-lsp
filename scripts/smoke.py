@@ -709,6 +709,11 @@ def t_rename_local_and_refuse_stdlib(c, d):
     resp = c.request("textDocument/rename", {
         "textDocument": doc.td(), "position": doc.pos("printline", offset=2), "newName": "shout"})
     check("error" in resp, "renaming a stdlib function was allowed: %r" % resp)
+    # Every reserved word of the lexer, including the newer ones (`defer`, `machine`).
+    for word in ("defer", "machine"):
+        resp = c.request("textDocument/rename", {
+            "textDocument": doc.td(), "position": doc.pos("add(1", offset=1), "newName": word})
+        check("error" in resp, "renaming to the reserved word %r was allowed: %r" % (word, resp))
 
 
 def t_formatting(c, d):

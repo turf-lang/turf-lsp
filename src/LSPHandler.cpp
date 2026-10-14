@@ -1556,22 +1556,15 @@ void LSPHandler::doReferences(json id, std::string uri, LspPosition pos, bool in
 
 namespace {
 // Identifiers Turf reserves or that would break code if used as a rename
-// target -- keywords (same list SemanticQuery.cpp's Bare-word completion
-// branch already offers, kept in sync by hand rather than sharing a
-// single source since the two live in different translation units for
-// different reasons) plus primitive type names and the 3 literal
-// keywords, none of which classifyTrigger's completion needs to flag
-// specially but a rename absolutely must reject.
+// target: every reserved word of the lexer's own table (turf::keywords():
+// keywords, primitive type names and the literals) so a word the language
+// adds is refused without anyone remembering this list, plus `from`, which
+// the parser reads as a keyword inside an import without the lexer reserving it.
 bool isReservedForRename(const std::string& name) {
-    static const std::set<std::string> reserved = {
-        "fn", "mut", "immut", "struct", "extern", "from", "import", "export",
-        "static", "if", "elseif", "else", "while", "for", "in", "step",
-        "give", "otherwise", "break", "continue", "return", "to", "enum",
-        "true", "false", "null", "self", "operator", "error", "recover",
-        "produce", "run", "as", "do", "compare", "matches", "done",
-        "int", "int32", "double", "bool", "string", "char", "ptr", "void"
-    };
-    return reserved.count(name) > 0;
+    if (name == "from") return true;
+    for (const auto& kw : turf::keywords())
+        if (kw.Name == name) return true;
+    return false;
 }
 
 bool isValidIdentifier(const std::string& name) {
