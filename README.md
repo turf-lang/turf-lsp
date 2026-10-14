@@ -74,7 +74,7 @@ Not done, on purpose: call and type hierarchy, a debug adapter (gdb works on
   library, asking `turf graph` for a project's packages.
 - `src/LSPHandler.cpp` is the protocol: a thread for I/O and one worker that
   owns all compiler access.
-- [ARCHITECTURE.md](ARCHITECTURE.md), [DEVELOPING.md](DEVELOPING.md) and [plan/](plan/)
+- [ARCHITECTURE.md](ARCHITECTURE.md), [DEVELOPING.md](DEVELOPING.md)
   have the rest.
 
 ## Build from source

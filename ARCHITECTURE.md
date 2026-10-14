@@ -2,8 +2,7 @@
 
 `turf-lsp` is a C++20 language server. It runs the compiler's front end
 in-process (the compiler's `turfcore` library) and answers editors over LSP 3.17
-on stdio. What follows is how the pieces fit; [plan/](plan/) has the design
-notes behind each feature.
+on stdio. What follows is how the pieces fit.
 
 ## Layers
 
