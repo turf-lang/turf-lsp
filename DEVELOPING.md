@@ -66,7 +66,9 @@ it. It writes the `.vsix` and the standalone server archive
 
 - `build.yml` runs on every push and pull request, on Linux x64, Windows x64 and
   macOS arm64. Each job builds `turf` and a statically linked server against the
-  compiler's `master`, runs the unit tests, the grammar check and the smoke test,
+  compiler release in `TURF_LANG_REF` (`v2.0.0`; a release ships against a
+  released compiler, never its `master`), with `turf` at the turf-cli revision
+  that release pins, runs the unit tests, the grammar check and the smoke test,
   packages the extension, runs the extension's unit tests, and installs the
   packaged `.vsix` into a real VS Code.
 - `compiler-sync.yml` runs every night at 00:00 IST against the compiler's

@@ -7,14 +7,8 @@ name: Build, test, package
 #
 # Platforms: Linux x64, Windows x64, macOS arm64 (the compiler's Tier 1).
 #
-# NOTE for whoever first pushes this: the compiler repository's recent commits
-# (the query facade's package-graph and cancellation options, `turf graph`,
-# TURF_STATIC_LLVM) must be on the ref below, and the static-link and
-# self-containment steps have not run anywhere yet -- the machine this was
-# written on has neither a Windows nor a macOS host nor static LLVM libraries.
-# Expect the first run to need adjustment in the "Build the server" steps; the
-# package step refuses a server that depends on libraries a user may lack, and
-# prints which, so a mistake there cannot ship.
+# The package step refuses a server that depends on libraries a user may
+# lack, and prints which, so a mistake in the static link cannot ship.
 
 on:
   push:
@@ -23,11 +17,12 @@ on:
   workflow_call: # release.yml runs this same build and then publishes what it made
 
 env:
-  # The compiler this server embeds. Until the compiler cuts tagged releases
-  # (REL-007), pin a commit SHA that contains include/turf/Analysis.h with
-  # PackageGraphFile, ShouldCancel, importableModules() and keywords().
+  # The compiler release this server embeds, and whose standard library the
+  # extension bundles: a release of turf-lsp ships against a released
+  # compiler, never its master. compiler-sync.yml follows master nightly, so a
+  # change there is known before this pin moves to the next release.
   TURF_LANG_REPO: turf-lang/turf-lang
-  TURF_LANG_REF: master
+  TURF_LANG_REF: v2.0.0
 
 jobs:
   linux-x64:
@@ -52,13 +47,18 @@ jobs:
           sudo apt-get install -y llvm-22-dev cmake ninja-build libzstd-dev zlib1g-dev xvfb
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
 
-      # turf's source is turf-lang's cli/, a mirror of the turf-cli repository;
-      # once cli/ is retired from turf-lang, it comes from turf-cli.
+      # turf comes from turf-cli, at the revision the compiler pins
+      # (TURF_CLI_REVISION); an older turf-lang still carries it as cli/.
+      - name: Which turf-cli
+        id: cli
+        shell: bash
+        run: echo "rev=$(tr -d '[:space:]' < turf-lang/TURF_CLI_REVISION 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
       - name: turf source (turf-cli, if turf-lang has no cli/)
         if: hashFiles('turf-lang/cli/go.mod') == ''
         uses: actions/checkout@v4
         with:
           repository: turf-lang/turf-cli
+          ref: ${{ steps.cli.outputs.rev }}
           path: turf-cli
       - name: Point the turf build at turf-cli
         if: hashFiles('turf-lang/cli/go.mod') == ''
@@ -140,13 +140,18 @@ jobs:
             mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-zlib
             mingw-w64-x86_64-zstd mingw-w64-x86_64-python
 
-      # turf's source is turf-lang's cli/, a mirror of the turf-cli repository;
-      # once cli/ is retired from turf-lang, it comes from turf-cli.
+      # turf comes from turf-cli, at the revision the compiler pins
+      # (TURF_CLI_REVISION); an older turf-lang still carries it as cli/.
+      - name: Which turf-cli
+        id: cli
+        shell: bash
+        run: echo "rev=$(tr -d '[:space:]' < turf-lang/TURF_CLI_REVISION 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
       - name: turf source (turf-cli, if turf-lang has no cli/)
         if: hashFiles('turf-lang/cli/go.mod') == ''
         uses: actions/checkout@v4
         with:
           repository: turf-lang/turf-cli
+          ref: ${{ steps.cli.outputs.rev }}
           path: turf-cli
       - name: Point the turf build at turf-cli
         if: hashFiles('turf-lang/cli/go.mod') == ''
@@ -228,13 +233,18 @@ jobs:
           brew install llvm cmake ninja zstd
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
-      # turf's source is turf-lang's cli/, a mirror of the turf-cli repository;
-      # once cli/ is retired from turf-lang, it comes from turf-cli.
+      # turf comes from turf-cli, at the revision the compiler pins
+      # (TURF_CLI_REVISION); an older turf-lang still carries it as cli/.
+      - name: Which turf-cli
+        id: cli
+        shell: bash
+        run: echo "rev=$(tr -d '[:space:]' < turf-lang/TURF_CLI_REVISION 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
       - name: turf source (turf-cli, if turf-lang has no cli/)
         if: hashFiles('turf-lang/cli/go.mod') == ''
         uses: actions/checkout@v4
         with:
           repository: turf-lang/turf-cli
+          ref: ${{ steps.cli.outputs.rev }}
           path: turf-cli
       - name: Point the turf build at turf-cli
         if: hashFiles('turf-lang/cli/go.mod') == ''
