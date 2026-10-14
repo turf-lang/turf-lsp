@@ -64,6 +64,10 @@
         "extensions": [
           ".tr"
         ],
+        "icon": {
+          "light": "./media/file-icon-light.svg",
+          "dark": "./media/file-icon-dark.svg"
+        },
         "configuration": "./language-configuration.json"
       }
     ],

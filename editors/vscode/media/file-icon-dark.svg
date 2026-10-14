@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- TurfLang's logo, ">tr", as a file icon: the glyph alone, no background square. -->
+  <g fill="none" stroke-width="2.6">
+    <path d="M2 11 L9 16.5 L2 22" stroke="#74acec" stroke-linejoin="miter"/>
+    <g stroke="#ffffff" stroke-linecap="butt">
+      <path d="M15.5 8 V19.5 Q15.5 22.3 18.5 22.3 H20"/>
+      <path d="M12.5 12.5 H20"/>
+      <path d="M24 23.5 V12.5 M24 16.5 Q24 12.8 28 12.8 H30.5"/>
+    </g>
+  </g>
+</svg>
