@@ -48,7 +48,7 @@ public:
     // makes context-aware completion -- io:: / instance. -- possible).
     turf::AnalysisResult result;
 
-    // The first `preludeImportCount()` entries of `asts()` are the 6
+    // The first `preludeImportCount()` entries of `asts()` are the 9
     // synthetic `import int; import double; ...` nodes the compiler injects
     // ahead of the user's real top-level declarations (turf-lang auto-
     // imports these into every top-level file so e.g. bare string `+`

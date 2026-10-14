@@ -754,7 +754,7 @@ public:
 std::vector<SemanticToken> SemanticQuery::getSemanticTokens(const DocumentAnalysis& analysis) {
     SemanticTokensVisitor visitor;
     // Skip the synthetic prelude imports (DocumentAnalysis::
-    // preludeImportCount) -- tokenizing them would emit up to 6 phantom
+    // preludeImportCount) -- tokenizing them would emit up to 9 phantom
     // Namespace tokens overlapping the user's real first line.
     for (size_t i = analysis.preludeImportCount(); i < analysis.asts().size(); ++i) {
         if (analysis.asts()[i]) {

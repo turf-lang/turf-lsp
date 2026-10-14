@@ -8,7 +8,7 @@
 // installed, so that "install the extension and it works" does not depend on
 // the user setting anything.
 //
-// The compiler resolves `import io;` (and the six prelude modules every file
+// The compiler resolves `import io;` (and the nine prelude modules every file
 // imports implicitly) against an installation root: $TURF_HOME if set, else
 // the directory above the running binary. Both are trusted blindly, so a
 // stray TURF_HOME pointing at the wrong place used to make every import fail,

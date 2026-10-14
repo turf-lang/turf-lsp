@@ -2,8 +2,9 @@
 //
 // Every `.tr` file under a project's tests/ directory is a test (`turf test`'s
 // own rule); each shows up as an item, and running any of them runs the project's
-// suite -- `turf test` has no way to pick one -- and marks every item with what
-// it printed. A program that fails to compile when it should (a `fail_*` test)
+// whole suite (`turf test` can name tests, `turf test <path>...`, but one run
+// of the suite is what the items are marked from) and marks every item with
+// what it printed. A program that fails to compile when it should (a `fail_*` test)
 // shows as passed, as `turf test` counts it.
 
 import * as vscode from 'vscode';
