@@ -1,0 +1,213 @@
+name: Compiler sync
+
+# Keeps this server in step with the compiler it embeds. build.yml runs when
+# THIS repository changes; the compiler changes on its own schedule, and a
+# change to include/turf/Analysis.h, the prelude, the keyword table or the
+# standard library's names would otherwise first show up as a red build on an
+# unrelated push. So every night this builds the server against the latest
+# turf-lang master, with turf from turf-cli at the revision that master pins
+# (TURF_CLI_REVISION), and runs what build.yml's Linux job runs short of
+# packaging: the unit tests, the grammar check (the TextMate grammar against
+# the lexer's own keyword table) and the smoke test (the server over stdio
+# against the real standard library and the real turf).
+#
+# Linux x64 only, linked to the system LLVM: this is a drift detector, not a
+# release build, so no static link, no VS Code and no .vsix. The platforms
+# and the packaged extension stay build.yml's.
+#
+# The compiler commit that was tested is in the run's summary. A failed
+# scheduled run opens an issue, "Compiler sync broken" (label `compiler-sync`),
+# or comments on the one already open; the next green run comments and closes
+# it. A run started by hand never opens or comments on it, but a green one
+# still closes it.
+#
+# turf-lang can trigger this ahead of the night with a repository_dispatch of
+# type `compiler-updated`; its client_payload may carry {"ref": "<branch, tag
+# or SHA>"}, and workflow_dispatch takes the same as an input.
+#
+# turf-lang is public, so this workflow's own token checks it out. Should it go
+# private, add a repository secret TURFLANG_TOKEN (read access to
+# turf-lang/turf-lang's contents) and it is used instead.
+
+on:
+  schedule:
+    # Every day at 00:00 IST, with turf-fuzz's nightly (owner, 2026-10-14).
+    # Cron is in UTC: 18:30 the day before.
+    - cron: "30 18 * * *"
+  workflow_dispatch:
+    inputs:
+      compiler_ref:
+        description: "turf-lang branch, tag or SHA to build against"
+        default: master
+  repository_dispatch:
+    types: [compiler-updated]
+
+permissions:
+  contents: read
+  issues: write
+  actions: read # the report lists the failed steps
+
+concurrency:
+  group: compiler-sync
+  cancel-in-progress: false
+
+env:
+  TURF_LANG_REPO: turf-lang/turf-lang
+  TURF_CLI_REPO: turf-lang/turf-cli
+  TURF_LANG_REF: ${{ github.event.client_payload.ref || github.event.inputs.compiler_ref || 'master' }}
+  ISSUE_TITLE: Compiler sync broken
+  ISSUE_LABEL: compiler-sync
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: turf-lsp
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TURF_LANG_REPO }}
+          ref: ${{ env.TURF_LANG_REF }}
+          path: turf-lang
+          token: ${{ secrets.TURFLANG_TOKEN || github.token }}
+          submodules: false
+
+      - name: Which compiler commit, and which turf-cli
+        id: sha
+        run: |
+          sha=$(git -C turf-lang rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          # turf-lang pins the turf-cli revision it was released with; a ref
+          # that predates the pin builds turf from turf-cli's default branch.
+          echo "cli_rev=$(tr -d '[:space:]' < turf-lang/TURF_CLI_REVISION 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Compiler sync"
+            echo
+            echo "- turf-lang \`${TURF_LANG_REF}\` at \`$sha\` ($(cat turf-lang/VERSION 2>/dev/null || echo 'no VERSION file'))"
+            echo "- turf-lsp at \`$GITHUB_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # turf's source is turf-cli; an older turf-lang still carries it as cli/.
+      - name: turf source
+        if: hashFiles('turf-lang/cli/go.mod') == ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TURF_CLI_REPO }}
+          ref: ${{ steps.sha.outputs.cli_rev }}
+          path: turf-cli
+      - name: Point the turf build at turf-cli
+        if: hashFiles('turf-lang/cli/go.mod') == ''
+        run: echo "TURF_CLI_DIR=$GITHUB_WORKSPACE/turf-cli" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ hashFiles('turf-lang/cli/go.mod') != '' && 'turf-lang/cli/go.mod' || 'turf-cli/go.mod' }}
+
+      - name: Build turf (the project-graph helper)
+        run: |
+          cd "${TURF_CLI_DIR:-turf-lang/cli}"
+          CGO_ENABLED=0 go build -trimpath -o "$GITHUB_WORKSPACE/out/turf" ./cmd/turf
+
+      - name: Cache LLVM
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/lib/llvm-22
+            /usr/include/llvm-22
+            /usr/include/llvm-c-22
+          key: llvm-22-${{ runner.os }}-v1
+      - name: Install LLVM 22
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y llvm-22-dev
+      # The cache holds LLVM's own tree; what it links against is installed
+      # every time.
+      - name: Install the build tools
+        run: |
+          sudo apt-get install -y cmake ninja-build ccache libzstd-dev zlib1g-dev
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-compiler-sync-${{ steps.sha.outputs.sha }}
+          restore-keys: |
+            ccache-compiler-sync-
+
+      - name: Build the server
+        run: |
+          cmake -S turf-lsp -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DTURF_LANG_DIR="$GITHUB_WORKSPACE/turf-lang" \
+            -DLLVM_DIR=/usr/lib/llvm-22/lib/cmake/llvm \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel
+
+      - name: Unit tests, grammar check
+        run: |
+          build/turf-lsp-tests
+          python3 turf-lsp/scripts/check_grammar.py --server build/turf-lsp
+
+      - name: Server smoke test (a staged install, TURF_HOME unset)
+        run: python3 turf-lsp/scripts/smoke.py --server build/turf-lsp --stdlib-from turf-lang --turf out/turf
+
+      - name: Record the result
+        if: always()
+        run: |
+          echo "- result: **${{ job.status }}**" >> "$GITHUB_STEP_SUMMARY"
+
+  # Runs whether or not `sync` passed: it is the part that tells a person.
+  report:
+    needs: sync
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RESULT: ${{ needs.sync.result }}
+      SHA: ${{ needs.sync.outputs.sha }}
+    steps:
+      - name: Open, update or close the "Compiler sync broken" issue
+        run: |
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          sha_text="${SHA:-unknown (the checkout failed)}"
+          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$ISSUE_TITLE\" in:title" \
+                   --json number,title -q "[.[] | select(.title == \"$ISSUE_TITLE\")][0].number // empty")
+
+          if [ "$RESULT" = success ]; then
+            [ -n "$open" ] || exit 0
+            gh issue comment "$open" --repo "$GITHUB_REPOSITORY" \
+              --body "Green again against turf-lang \`$sha_text\` (${run_url}). Closing."
+            gh issue close "$open" --repo "$GITHUB_REPOSITORY"
+            exit 0
+          fi
+
+          # A cancelled or skipped run says nothing about the compiler, and a
+          # run started by hand is someone already looking.
+          [ "$RESULT" = failure ] || exit 0
+          [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || exit 0
+
+          failed=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
+                     -q '.jobs[] | select(.name == "sync") | .steps[] | select(.conclusion == "failure") | "- " + .name' || true)
+          body=$(printf '%s\n' \
+            "The server no longer builds or passes against turf-lang \`${TURF_LANG_REF}\` at \`$sha_text\` (run ${run_url})." \
+            "" \
+            "Failed step:" \
+            "${failed:-- (see the run)}" \
+            "" \
+            "Look at what changed in the compiler since the last green run: include/turf/Analysis.h, the keyword table, the prelude, lib/std names, the error registry. Fix the drift here (or in turflang if the compiler is wrong); this issue closes itself on the next green run.")
+
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh label create "$ISSUE_LABEL" --repo "$GITHUB_REPOSITORY" --color B60205 \
+              --description "turf-lsp is out of step with the compiler's master" 2>/dev/null || true
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body "$body" --label "$ISSUE_LABEL" \
+            || gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body "$body"
+          fi
