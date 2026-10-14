@@ -53,7 +53,9 @@ std::string firstLines(const std::string& text, size_t maxLines) {
 std::string mtimeOf(const fs::path& p) {
     std::error_code ec;
     auto t = fs::last_write_time(p, ec);
-    return ec ? std::string("-") : std::to_string(t.time_since_epoch().count());
+    // libc++'s file_clock counts in __int128, which no to_string overload takes
+    // (macOS: "call to 'to_string' is ambiguous"); a signature needs no more.
+    return ec ? std::string("-") : std::to_string(static_cast<long long>(t.time_since_epoch().count()));
 }
 
 // What a graph depends on: the root's manifest and lock, and every package's
