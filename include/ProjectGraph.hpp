@@ -61,7 +61,7 @@ public:
 
 private:
     struct Entry {
-        std::string signature;                  // the manifests' timestamps when it was made
+        std::string signature;                  // the manifests' stamps (time, size, hash) when it was made
         ProjectGraph result;                    // for files inside this project
         std::vector<std::string> packageDirs;   // every package's directory in the graph
     };

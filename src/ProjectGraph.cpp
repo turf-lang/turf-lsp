@@ -50,19 +50,26 @@ std::string firstLines(const std::string& text, size_t maxLines) {
     return out;
 }
 
-std::string mtimeOf(const fs::path& p) {
+// A manifest's timestamp, size and content hash. The timestamp alone is not
+// enough: on Windows libstdc++ reports it to the second, so a turf.toml fixed
+// within a second of breaking it looked unchanged and its error stayed. The
+// files are a few hundred bytes, so reading them on every lookup is cheap.
+std::string stampOf(const fs::path& p) {
     std::error_code ec;
     auto t = fs::last_write_time(p, ec);
+    if (ec) return "-";
+    const std::string text = readFile(p);
     // libc++'s file_clock counts in __int128, which no to_string overload takes
     // (macOS: "call to 'to_string' is ambiguous"); a signature needs no more.
-    return ec ? std::string("-") : std::to_string(static_cast<long long>(t.time_since_epoch().count()));
+    return std::to_string(static_cast<long long>(t.time_since_epoch().count())) + "/" +
+           std::to_string(text.size()) + "/" + std::to_string(std::hash<std::string>{}(text));
 }
 
 // What a graph depends on: the root's manifest and lock, and every package's
 // manifest (a path dependency's `turf.toml` can change the graph too).
 std::string signatureOf(const fs::path& root, const std::vector<std::string>& packageDirs) {
-    std::string sig = mtimeOf(root / "turf.toml") + "|" + mtimeOf(root / "turf.lock");
-    for (const auto& dir : packageDirs) sig += "|" + dir + ":" + mtimeOf(fs::path(dir) / "turf.toml");
+    std::string sig = stampOf(root / "turf.toml") + "|" + stampOf(root / "turf.lock");
+    for (const auto& dir : packageDirs) sig += "|" + dir + ":" + stampOf(fs::path(dir) / "turf.toml");
     return sig;
 }
 
