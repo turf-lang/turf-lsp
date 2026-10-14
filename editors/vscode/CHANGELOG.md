@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2
+
+- `.tr` files show TurfLang's logo as their file icon, in light and dark
+  variants, wherever the file icon theme has none of its own for Turf.
+
 ## 1.0.1
 
 - Linux: the bundled server runs on glibc 2.35 and newer (Ubuntu 22.04,

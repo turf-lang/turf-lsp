@@ -47,7 +47,7 @@ your editor's page:
 `turf-lsp --version` prints what the server found:
 
 ```
-turf-lsp 1.0.1 (LSP protocol 3.17)
+turf-lsp 1.0.2 (LSP protocol 3.17)
 compiler d54a43c5b6f0
 stdlib /opt/turf (next to the server (../lib/std))
 ```
