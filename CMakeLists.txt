@@ -58,6 +58,13 @@ add_library(turf_lsp_core OBJECT
 
 add_executable(turf-lsp src/main.cpp)
 add_executable(turf-lsp-tests tests/unit_tests.cpp)
+# On Windows both run with UTF-8 as the process code page, so the UTF-8 paths
+# the server and the compiler hold open the files they name (src/windows/).
+if(WIN32)
+    enable_language(RC)
+    target_sources(turf-lsp PRIVATE src/windows/utf8.rc)
+    target_sources(turf-lsp-tests PRIVATE src/windows/utf8.rc)
+endif()
 enable_testing()
 add_test(NAME unit COMMAND turf-lsp-tests)
 

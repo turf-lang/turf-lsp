@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- The process's ANSI code page is UTF-8 (Windows 10 1903 and later). The
+     server and the compiler it embeds hold paths as UTF-8 std::strings; without
+     this, every narrow-string file API on Windows (fopen, std::ifstream,
+     std::filesystem::path from a char string) reads them in the legacy code
+     page, and a project under `My Projects/café` resolves nothing. -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>
