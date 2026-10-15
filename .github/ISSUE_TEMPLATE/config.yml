@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Compiler diagnostic is wrong
+    url: https://github.com/turf-lang/turf-lang/issues/new/choose
+    about: If `turfc` prints the same wrong message on the command line, it is a compiler issue.
