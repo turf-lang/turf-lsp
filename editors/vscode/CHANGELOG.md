@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0
+
+- The language server embeds the TurfLang 2.1.0 compiler front end, and the
+  extension bundles its standard library, so diagnostics, quick fixes and
+  completion follow 2.1.0.
+
 ## 1.0.2
 
 - `.tr` files show TurfLang's logo as their file icon, in light and dark
