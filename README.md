@@ -4,7 +4,7 @@ The language server for the [Turf programming language](https://github.com/turf-
 with a VS Code extension and setup instructions for Neovim, Emacs and Sublime
 Text. It speaks the Language Server Protocol 3.17 over stdio.
 
-The server links the compiler's front end (TurfLang 2.0.0) in-process, through the
+The server links the compiler's front end (TurfLang 2.1.0) in-process, through the
 compiler's query facade, so diagnostics, hover, completion and the rest come from
 the compiler itself and not from a second implementation of the language.
 

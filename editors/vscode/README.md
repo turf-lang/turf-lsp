@@ -6,7 +6,7 @@ more. Open a `.tr` file and start writing. The language server and the standard
 library come with the extension, so there is nothing to install and nothing to
 configure.
 
-The answers come from the Turf compiler itself (TurfLang 2.0.0), running inside the
+The answers come from the Turf compiler itself (TurfLang 2.1.0), running inside the
 language server, so the editor agrees with `turf build`.
 
 ## Features
