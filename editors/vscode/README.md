@@ -48,7 +48,9 @@ keeps working. If `turf` is installed somewhere unusual, set `turf.toolchain.pat
 - **Turf: Run**, **Turf: Build**, **Turf: Check** and **Turf: Run Tests** are
   available from the command palette, the Run button in the editor title, and links
   above `main` and in test files. They run as VS Code tasks.
-- A project's `tests/` appear in the **Testing** view.
+- A project's tests appear in the **Testing** view: each file of `tests/`, each
+  file of `src/` that declares `@test` functions, and each `@test` function under
+  its file, at its `fn`.
 
 In a workspace you have not trusted, analysis still works but Run, Build, Check and
 Test are disabled, because they would compile and run the workspace's code.

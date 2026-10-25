@@ -1,10 +1,14 @@
 // A project's tests in the Testing view.
 //
-// Every `.tr` file under a project's tests/ directory is a test (`turf test`'s
-// own rule); each shows up as an item, and running any of them runs the project's
-// whole suite (`turf test` can name tests, `turf test <path>...`, but one run
-// of the suite is what the items are marked from) and marks every item with
-// what it printed. A program that fails to compile when it should (a `fail_*` test)
+// The items are what `turf test` runs: every `.tr` file under a project's
+// tests/ directory, and every file of its src/ that declares `@test` functions.
+// A file's `@test` functions are its children, each at its `fn`. Running any
+// item runs the project's whole suite (`turf test` can name tests, `turf test
+// <path>...`, but one run of the suite is what the items are marked from) and
+// marks every item with what it printed: a function by its own line
+// (`[tests] unit.tr: adds ... PASS`), a file by its line when it has one (a
+// plain test, or a file whose tests did not build) and otherwise by its
+// functions. A program that fails to compile when it should (a `fail_*` test)
 // shows as passed, as `turf test` counts it.
 
 import * as vscode from 'vscode';
@@ -12,35 +16,60 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 import { findToolchain, offerInstall } from './toolchain';
 import { projectRootFor } from './tasks';
-import { parseFailureDetails, parseTestLine } from './testoutput';
+import { findTestFunctions, parseFailureDetails, parseTestLine } from './testoutput';
 
 export function registerTesting(context: vscode.ExtensionContext): void {
     const controller = vscode.tests.createTestController('turf', 'Turf');
     context.subscriptions.push(controller);
 
-    // "<immediate dir>/<file>|<project root>" -> item. turf prints a test as
-    // `[<immediate dir>] <file>`, so that is what an output line is matched by.
+    // "<immediate dir>/<file>|<project root>" -> a file's item, and
+    // "<immediate dir>/<file>: <function>|<project root>" -> a `@test`
+    // function's. turf prints a test as `[<immediate dir>] <file>` (and
+    // `: <function>`), so that is what an output line is matched by.
     const items = new Map<string, vscode.TestItem>();
 
     const enabled = () => vscode.workspace.getConfiguration('turf').get<boolean>('testing.enable', true);
+
+    async function addFile(uri: vscode.Uri, root: string, inSrc: boolean): Promise<void> {
+        let text = '';
+        try {
+            text = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+        } catch {
+            return;
+        }
+        const functions = findTestFunctions(text);
+        // A src/ file is a test only for its `@test` functions.
+        if (inSrc && functions.length === 0) return;
+        const key = `${path.basename(path.dirname(uri.fsPath))}/${path.basename(uri.fsPath)}`;
+        const item = controller.createTestItem(uri.toString(), path.relative(root, uri.fsPath), uri);
+        for (const fn of functions) {
+            const child = controller.createTestItem(`${uri.toString()}#${fn.name}`, fn.name, uri);
+            child.range = new vscode.Range(fn.line, 0, fn.line, 0);
+            item.children.add(child);
+            items.set(`${key}: ${fn.name}|${root}`, child);
+        }
+        controller.items.add(item);
+        items.set(`${key}|${root}`, item);
+    }
 
     async function discover(): Promise<void> {
         controller.items.forEach(item => controller.items.delete(item.id));
         items.clear();
         if (!enabled()) return;
-        const files = await vscode.workspace.findFiles('**/tests/**/*.tr', '**/{node_modules,build,.git}/**', 2000);
+        const files = await vscode.workspace.findFiles('**/{tests,src}/**/*.tr', '**/{node_modules,build,.git}/**', 4000);
         for (const uri of files) {
             const root = projectRootFor(uri.fsPath);
-            if (!root || path.relative(root, uri.fsPath).split(path.sep)[0] !== 'tests') continue;
-            const item = controller.createTestItem(uri.toString(), path.relative(root, uri.fsPath), uri);
-            controller.items.add(item);
-            items.set(`${path.basename(path.dirname(uri.fsPath))}/${path.basename(uri.fsPath)}|${root}`, item);
+            const top = root ? path.relative(root, uri.fsPath).split(path.sep)[0] : undefined;
+            if (!root || (top !== 'tests' && top !== 'src')) continue;
+            await addFile(uri, root, top === 'src');
         }
     }
 
-    const watcher = vscode.workspace.createFileSystemWatcher('**/tests/**/*.tr');
+    const watcher = vscode.workspace.createFileSystemWatcher('**/{tests,src}/**/*.tr');
     watcher.onDidCreate(() => void discover());
     watcher.onDidDelete(() => void discover());
+    // A saved file may have gained or lost a `@test` function.
+    watcher.onDidChange(() => void discover());
     context.subscriptions.push(watcher, vscode.workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('turf.testing.enable')) void discover();
     }));
@@ -72,18 +101,38 @@ export function registerTesting(context: vscode.ExtensionContext): void {
                 const output = await runInProject(toolchain.turf, root, token, text => run.appendOutput(text.replace(/\r?\n/g, '\r\n')));
                 const details = parseFailureDetails(output);
                 const reported = new Set<string>();
+                const failed = new Set<string>();
                 for (const line of output.split(/\r?\n/)) {
                     const test = parseTestLine(line);
-                    const item = test ? items.get(`${test.label}/${test.file}|${root}`) : undefined;
-                    if (!test || !item) continue;
+                    if (!test) continue;
+                    const name = `${test.label}/${test.file}${test.test ? `: ${test.test}` : ''}`;
+                    const item = items.get(`${name}|${root}`);
+                    if (!item) continue;
                     reported.add(item.id);
-                    if (test.passed) { run.passed(item); continue; }
-                    const tail = `${test.label === 'tests' ? '' : test.label + '/'}${test.file}`;
+                    if (test.passed) { if (!failed.has(item.id)) run.passed(item); continue; }
+                    failed.add(item.id);
+                    // The detail block's header names the test as its key spells
+                    // it: `tests/bad.tr`, `tests/unit.tr: adds`, `src/main.tr: halves`.
+                    const tail = `${test.label === 'tests' ? '' : test.label + '/'}${test.file}${test.test ? `: ${test.test}` : ''}`;
                     const why = [...details.entries()].find(([p]) => p.endsWith(tail))?.[1];
                     run.failed(item, new vscode.TestMessage(why ? `${test.detail}\n${why}` : test.detail));
                 }
-                // A test that printed no result did not run (the suite stopped early).
-                for (const item of mine) if (!reported.has(item.id)) run.skipped(item);
+                for (const item of mine) {
+                    // A file of `@test` functions is what its functions are; one
+                    // that also has a `main` has a line of its own, and fails
+                    // when that line or any of its functions does.
+                    const children: vscode.TestItem[] = [];
+                    item.children.forEach(child => { children.push(child); });
+                    const ran = children.filter(child => reported.has(child.id));
+                    const bad = ran.filter(child => failed.has(child.id));
+                    if (bad.length > 0 && !failed.has(item.id)) {
+                        run.failed(item, new vscode.TestMessage(`${bad.length} of its tests failed: ${bad.map(c => c.label).join(', ')}`));
+                        continue;
+                    }
+                    if (reported.has(item.id)) continue;
+                    if (children.length > 0 && ran.length === children.length) run.passed(item);
+                    else run.skipped(item); // the suite stopped early
+                }
             }
         } finally {
             run.end();
