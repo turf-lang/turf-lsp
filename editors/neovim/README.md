@@ -84,7 +84,7 @@ above except the filetype line:
 - [`upstream/mason-registry/packages/turf-lsp/package.yaml`](upstream/mason-registry/packages/turf-lsp/package.yaml)
   goes to [mason-org/mason-registry](https://github.com/mason-org/mason-registry).
   It installs the release archives `turf-lsp-<platform>-<version>` from the tag it
-  names, currently `v1.1.0`, for `linux_x64_gnu`, `darwin_arm64` and `win_x64`. Once
+  names, currently `v1.2.0`, for `linux_x64_gnu`, `darwin_arm64` and `win_x64`. Once
   it is merged, `:MasonInstall turf-lsp` works. For a new release, change the tag
   in `source.id`.
 - [`upstream/nvim-lspconfig/lsp/turf_ls.lua`](upstream/nvim-lspconfig/lsp/turf_ls.lua)

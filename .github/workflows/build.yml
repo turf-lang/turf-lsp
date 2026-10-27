@@ -22,7 +22,7 @@ env:
   # compiler, never its master. compiler-sync.yml follows master nightly, so a
   # change there is known before this pin moves to the next release.
   TURF_LANG_REPO: turf-lang/turf-lang
-  TURF_LANG_REF: v2.1.0
+  TURF_LANG_REF: v2.2.0
 
 jobs:
   linux-x64:
