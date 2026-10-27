@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.0
+
+- The language server embeds the TurfLang 2.2.0 compiler front end, and the
+  extension bundles its standard library, so diagnostics, quick fixes and
+  completion follow 2.2.0.
+- The Testing view lists each `@test` function under its file, and the `@test`
+  functions in a project's `src/` files too, each marked passed or failed on
+  its own. Before, the results of such tests were dropped and their file was
+  shown as skipped.
+
 ## 1.1.0
 
 - The language server embeds the TurfLang 2.1.0 compiler front end, and the
