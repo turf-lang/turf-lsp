@@ -7,7 +7,7 @@ import * as assert from 'assert';
 import {
     chooseServer, commandLine, compareVersions, findProjectRoot, parseServerVersion, Probe, toolchainCandidates, which,
 } from '../resolve';
-import { parseFailureDetails, parseTestLine } from '../testoutput';
+import { findTestFunctions, parseFailureDetails, parseTestLine } from '../testoutput';
 
 let failures = 0;
 function test(name: string, body: () => void): void {
@@ -132,6 +132,40 @@ test('the turf command line for a file or a project', () => {
 
 // ── turf test output ────────────────────────────────────────────────────────
 
+test('@test functions in a file', () => {
+    const src = [
+        'import test;',
+        '',
+        '@test',
+        'fn adds(): void {',
+        '}',
+        '',
+        '@test(compile_error, E041, "Unknown function (x)")',
+        '@deprecated("old")',
+        'fn rejects(): void {',
+        '}',
+        '',
+        '    @test(panic, "boom")',
+        'pub fn panics(): void {',
+        '}',
+        '// @test in a comment is not a test',
+        '@testing',
+        'fn not_a_test(): void {',
+        '}',
+        '@test',
+        'struct NotAFunction {',
+        '}',
+        'fn main(): int { return 0; }',
+    ].join('\n');
+    assert.deepStrictEqual(findTestFunctions(src), [
+        { name: 'adds', line: 3 },
+        { name: 'rejects', line: 8 },
+        { name: 'panics', line: 12 },
+    ]);
+    assert.deepStrictEqual(findTestFunctions('fn main(): int { return 0; }\n'), []);
+    assert.deepStrictEqual(findTestFunctions('@test fn same_line(): void {\r\n}\r\n'), [{ name: 'same_line', line: 0 }]);
+});
+
 test('turf test result lines', () => {
     assert.deepStrictEqual(parseTestLine('[tests] ok.tr ... PASS'), { label: 'tests', file: 'ok.tr', passed: true, detail: 'PASS' });
     assert.strictEqual(parseTestLine('[tests] fail_reject.tr ... PASS (Rejected properly)')!.passed, true);
@@ -139,6 +173,9 @@ test('turf test result lines', () => {
     assert.strictEqual(bad.passed, false);
     assert.strictEqual(bad.detail, 'RUNTIME FAILED (Exit code 1)');
     assert.strictEqual(parseTestLine('\x1b[32m[sub] a.tr ... PASS\x1b[0m')!.label, 'sub');
+    assert.deepStrictEqual(parseTestLine('[tests] unit.tr: adds ... PASS'), { label: 'tests', file: 'unit.tr', test: 'adds', passed: true, detail: 'PASS' });
+    assert.strictEqual(parseTestLine('[tests] unit.tr: adds ... FAILED (wrong value)')!.passed, false);
+    assert.strictEqual(parseTestLine('[src] main.tr: halves ... PASS')!.test, 'halves');
     assert.strictEqual(parseTestLine('=== Test Summary ==='), undefined);
     assert.strictEqual(parseTestLine('Total Tests: 3'), undefined);
 });

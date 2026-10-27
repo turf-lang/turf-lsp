@@ -231,7 +231,7 @@
         "turf.testing.enable": {
           "type": "boolean",
           "default": true,
-          "description": "Show the project's tests in the Testing view."
+          "description": "Show the project's tests (the files of tests/ and every @test function) in the Testing view."
         }
       }
     },
