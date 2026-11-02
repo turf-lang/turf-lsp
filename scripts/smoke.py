@@ -341,6 +341,19 @@ def t_diagnostics_update_on_change(c, d):
     check("missing" in got["diagnostics"][0]["message"], "stale or wrong diagnostic after an edit")
 
 
+def t_diagnostics_span_labels(c, d):
+    # TurfLang 2.3 (DX-5): the primary label is the first related information,
+    # at the diagnostic's own range; the written type follows with its own.
+    doc = Doc(c, d / "labels.tr", "fn main(): int {\n    immut s: string = 5;\n    return 0;\n}\n")
+    diags = doc.diagnostics()
+    check(diags, "a type mismatch has no diagnostic")
+    rel = diags[0].get("relatedInformation", [])
+    check(rel and rel[0]["message"] == "this is an `int`", "no primary label: %r" % rel)
+    check(rel[0]["location"]["range"] == diags[0]["range"], "the label is not at the diagnostic: %r" % rel)
+    check(any(r["message"] == "`s` is a `string` because of this" for r in rel),
+          "no secondary span for the written type: %r" % rel)
+
+
 def t_hover(c, d):
     doc = Doc(c, d / "hover.tr", FEATURES)
     doc.diagnostics()
