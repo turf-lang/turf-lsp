@@ -1734,12 +1734,27 @@ std::optional<std::string> extractImportSuggestion(const std::string& diagnostic
 // pattern match, the documented fallback for exactly this situation. Returns the variable name
 // on a match.
 std::optional<std::string> extractUnusedVariableName(const std::string& diagnosticMessage) {
-    static const std::string prefix = "Variable '";
-    static const std::string suffix = "' is declared but never used.";
-    if (diagnosticMessage.rfind(prefix, 0) != 0) return std::nullopt;
-    size_t nameEnd = diagnosticMessage.find(suffix, prefix.size());
-    if (nameEnd == std::string::npos) return std::nullopt;
-    return diagnosticMessage.substr(prefix.size(), nameEnd - prefix.size());
+    // TurfLang 2.3 writes the name in backticks (DIAGNOSTICS_STYLE.md); 2.2 in
+    // single quotes.
+    for (const char q : {'`', '\''}) {
+        const std::string prefix = std::string("Variable ") + q;
+        const std::string suffix = std::string(1, q) + " is declared but never used.";
+        if (diagnosticMessage.rfind(prefix, 0) != 0) continue;
+        size_t nameEnd = diagnosticMessage.find(suffix, prefix.size());
+        if (nameEnd == std::string::npos) continue;
+        return diagnosticMessage.substr(prefix.size(), nameEnd - prefix.size());
+    }
+    return std::nullopt;
+}
+
+// The first name a message quotes: `name` (TurfLang 2.3, DIAGNOSTICS_STYLE.md)
+// or 'name' (2.2), whichever comes first.
+std::optional<std::string> firstQuotedName(const std::string& message) {
+    size_t open = message.find_first_of("`'");
+    if (open == std::string::npos) return std::nullopt;
+    size_t close = message.find(message[open], open + 1);
+    if (close == std::string::npos || close == open + 1) return std::nullopt;
+    return message.substr(open + 1, close - open - 1);
 }
 } // namespace
 
@@ -1782,12 +1797,8 @@ void LSPHandler::doCodeAction(json id, std::string uri, json diagnostics,
         // module is known to exist. Also the answer for `import list::List;`
         // followed by `list::List`, where only the symbol was imported.
         if (code == "E145") {
-            const std::string quote = "'";
-            size_t open = message.find(quote);
-            size_t close = open == std::string::npos ? std::string::npos : message.find(quote, open + 1);
-            if (close != std::string::npos && close > open + 1) {
-                const std::string name = message.substr(open + 1, close - open - 1);
-                if (auto action = importAction(uri, "import " + name + ";", diag)) actions.push_back(std::move(*action));
+            if (auto name = firstQuotedName(message)) {
+                if (auto action = importAction(uri, "import " + *name + ";", diag)) actions.push_back(std::move(*action));
             }
             continue;
         }
@@ -1798,11 +1809,8 @@ void LSPHandler::doCodeAction(json id, std::string uri, json diagnostics,
         // the prelude's modules -- `io`, `math`, `sys`, ... -- which need no
         // import and so never produce this.)
         if (code == "E031") {
-            const std::string quote = "'";
-            size_t open = message.find(quote);
-            size_t close = open == std::string::npos ? std::string::npos : message.find(quote, open + 1);
-            if (close != std::string::npos) {
-                const std::string name = message.substr(open + 1, close - open - 1);
+            if (auto quoted = firstQuotedName(message)) {
+                const std::string name = *quoted;
                 auto analysis = ensureFreshAnalysis(uri, cancelled);
                 if (cancelled()) { sendError(id, -32800, "Request cancelled"); return; }
                 if (analysis) {
