@@ -370,6 +370,24 @@ static void testProjectLocator() {
     s.write("proj/src2/y.tr");
     CHECK(!isInside((s.root / "proj/src2/y.tr").string(), src));
 
+    // IF-2/IF-5: the compiler's package-graph fixture, as `turf graph` writes
+    // it, names both packages' directories.
+    {
+        const std::string fixture = std::string(TURF_LANG_DIR_STR) +
+                                    "/docs/reference/schemas/package-graph-fixtures/graph.json";
+        std::ifstream in(fixture);
+        CHECK(in.good());
+        std::stringstream text;
+        text << in.rdbuf();
+        auto dirs = turf_lsp::packageDirsFromGraph(text.str());
+        std::sort(dirs.begin(), dirs.end());
+        CHECK_EQ(dirs.size(), size_t(2));
+        if (dirs.size() == 2) {
+            CHECK_EQ(dirs[0], std::string("app"));
+            CHECK_EQ(dirs[1], std::string("shapes"));
+        }
+    }
+
     // With no turf binary known, a file is analysed on its own.
     ProjectGraphProvider none;
     auto g = none.forFile((s.root / "proj/src/main.tr").string());

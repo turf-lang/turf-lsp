@@ -101,6 +101,14 @@ std::string findProjectRoot(const std::string& file) {
     return "";
 }
 
+std::vector<std::string> packageDirsFromGraph(const std::string& graphJson) {
+    std::vector<std::string> dirs;
+    auto graph = nlohmann::json::parse(graphJson);
+    for (const auto& [name, pkg] : graph.at("packages").items())
+        dirs.push_back(fs::path(pkg.at("src").get<std::string>()).parent_path().string());
+    return dirs;
+}
+
 bool isInside(const std::string& path, const std::string& dir) {
     const std::string p = canonical(path);
     std::string d = canonical(dir);
@@ -182,9 +190,7 @@ ProjectGraphProvider::Entry ProjectGraphProvider::build(const std::string& root)
         }
         entry.result.graphFile = out.string();
         try {
-            auto graph = nlohmann::json::parse(readFile(out));
-            for (const auto& [name, pkg] : graph.at("packages").items())
-                entry.packageDirs.push_back(fs::path(pkg.at("src").get<std::string>()).parent_path().string());
+            entry.packageDirs = packageDirsFromGraph(readFile(out));
         } catch (const std::exception& e) {
             // The compiler will say what is wrong with it; nothing to track.
             Logger::warn(std::string("turf graph output was not a package graph: ") + e.what());
