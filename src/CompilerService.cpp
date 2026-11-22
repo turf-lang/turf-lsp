@@ -96,6 +96,16 @@ MappedDiagnostic mapDiagnostic(const turf::Diagnostic& diag, const std::string& 
     md.message = diag.Message;
     if (!diag.Hint.empty()) md.message += "\nhint: " + diag.Hint;
 
+    // TurfLang 2.3 (DX-5): the label under the primary span ("this is an
+    // `int`") is related information at the diagnostic's own range, listed
+    // first; the related locations after it are the secondary spans, each
+    // with its own label.
+    if (!diag.Label.empty()) {
+        MappedRelatedInfo primary;
+        primary.loc = md.loc;
+        primary.description = diag.Label;
+        md.related.push_back(std::move(primary));
+    }
     for (const auto& rel : diag.Related) {
         MappedRelatedInfo mri;
         mri.loc.filename = !rel.Where.Path.empty() ? rel.Where.Path : md.loc.filename;

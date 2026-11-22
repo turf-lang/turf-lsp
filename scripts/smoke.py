@@ -341,6 +341,19 @@ def t_diagnostics_update_on_change(c, d):
     check("missing" in got["diagnostics"][0]["message"], "stale or wrong diagnostic after an edit")
 
 
+def t_diagnostics_span_labels(c, d):
+    # TurfLang 2.3 (DX-5): the primary label is the first related information,
+    # at the diagnostic's own range; the written type follows with its own.
+    doc = Doc(c, d / "labels.tr", "fn main(): int {\n    immut s: string = 5;\n    return 0;\n}\n")
+    diags = doc.diagnostics()
+    check(diags, "a type mismatch has no diagnostic")
+    rel = diags[0].get("relatedInformation", [])
+    check(rel and rel[0]["message"] == "this is an `int`", "no primary label: %r" % rel)
+    check(rel[0]["location"]["range"] == diags[0]["range"], "the label is not at the diagnostic: %r" % rel)
+    check(any(r["message"] == "`s` is a `string` because of this" for r in rel),
+          "no secondary span for the written type: %r" % rel)
+
+
 def t_hover(c, d):
     doc = Doc(c, d / "hover.tr", FEATURES)
     doc.diagnostics()
@@ -525,7 +538,9 @@ def t_completion_regions(c, d):
     check("while" not in fields and "fn" not in fields, "a struct body offers statements: %r" % fields)
 
 
-SYNTAX_COMPLAINT = ("Expected", "Unexpected", "Unclosed", "Statements are not allowed", "Missing")
+# TurfLang 2.3 words them in the first person (DIAGNOSTICS_STYLE.md); 2.2 did not.
+SYNTAX_COMPLAINT = ("Expected", "Unexpected", "Unclosed", "Statements are not allowed", "Missing",
+                    "I expected", "I did not expect", "I did not find", "I found a statement outside")
 
 
 def fill_placeholders(snippet):
@@ -556,9 +571,12 @@ def t_completion_snippets_parse(c, d):
             doc = Doc(c, d / ("snip_%s_%s.tr" % (region, re.sub(r"\W", "_", it["label"]))), text)
             diags = doc.diagnostics(timeout=20)
             # A call such as `helper(a)` is an expression the user ends with
-            # `;` themselves; that alone is not a defect in the snippet.
+            # `;` themselves, and a bare final tab stop ($0) is where they write
+            # a body (an arm of `compare`); neither is a defect in the snippet.
             bad = [x["message"].split("\n")[0] for x in diags
-                   if x["message"].startswith(SYNTAX_COMPLAINT) and not x["message"].startswith("Expected ';'")]
+                   if x["message"].startswith(SYNTAX_COMPLAINT)
+                   and not x["message"].startswith(("Expected ';'", "I expected a `;`"))
+                   and "the arm has no body" not in x["message"]]
             check(not bad, "snippet %r (%s) is not valid TurfLang: %s\n%s" % (it["label"], region, bad[:2], body))
             seen += 1
     check(seen >= 12, "only %d snippets were checked; the server offers fewer than expected" % seen)
@@ -1020,7 +1038,7 @@ def t_code_action_add_missing_import(c, d):
     not the example any more: it is in the prelude and never needs one.)"""
     text = "// a comment\nimport math;\n\nfn main(): int {\n    json::parse(\"1\");\n    return 0;\n}\n"
     doc = Doc(c, d / "noimport.tr", text)
-    diags = [x for x in doc.diagnostics() if x.get("code") == "E031" and "'json'" in x["message"]]
+    diags = [x for x in doc.diagnostics() if x.get("code") == "E031" and ("'json'" in x["message"] or "`json`" in x["message"])]
     check(diags, "no E031 for the missing import")
     actions = c.result("textDocument/codeAction", {
         "textDocument": doc.td(), "range": diags[0]["range"], "context": {"diagnostics": diags}})
@@ -1056,7 +1074,7 @@ def t_code_action_e145_module_loaded_but_not_imported(c, d):
         doc = Doc(c, d / name, text)
         diags = [x for x in doc.diagnostics() if x.get("code") == "E145"]
         check(diags, "%s: no E145 for a module that was loaded but not imported" % name)
-        check("'list'" in diags[0]["message"], "%s: E145 does not name the module: %r" % (name, diags[0]["message"][:80]))
+        check("'list'" in diags[0]["message"] or "`list`" in diags[0]["message"], "%s: E145 does not name the module: %r" % (name, diags[0]["message"][:80]))
         actions = c.result("textDocument/codeAction", {
             "textDocument": doc.td(), "range": diags[0]["range"], "context": {"diagnostics": diags}})
         fix = [a for a in actions if a["title"] == "Add `import list;`"]
