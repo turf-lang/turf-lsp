@@ -109,6 +109,9 @@ export function registerTesting(context: vscode.ExtensionContext): void {
                     const item = items.get(`${name}|${root}`);
                     if (!item) continue;
                     reported.add(item.id);
+                    if (test.skipped) { run.skipped(item); continue; }
+                    // A `levels:` test reports one line per level; the item
+                    // passes when every level does.
                     if (test.passed) { if (!failed.has(item.id)) run.passed(item); continue; }
                     failed.add(item.id);
                     // The detail block's header names the test as its key spells

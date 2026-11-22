@@ -167,15 +167,23 @@ test('@test functions in a file', () => {
 });
 
 test('turf test result lines', () => {
-    assert.deepStrictEqual(parseTestLine('[tests] ok.tr ... PASS'), { label: 'tests', file: 'ok.tr', passed: true, detail: 'PASS' });
+    assert.deepStrictEqual(parseTestLine('[tests] ok.tr ... PASS'), { label: 'tests', file: 'ok.tr', passed: true, skipped: false, detail: 'PASS' });
     assert.strictEqual(parseTestLine('[tests] fail_reject.tr ... PASS (Rejected properly)')!.passed, true);
     const bad = parseTestLine('[tests] bad.tr ... RUNTIME FAILED (Exit code 1)')!;
     assert.strictEqual(bad.passed, false);
     assert.strictEqual(bad.detail, 'RUNTIME FAILED (Exit code 1)');
     assert.strictEqual(parseTestLine('\x1b[32m[sub] a.tr ... PASS\x1b[0m')!.label, 'sub');
-    assert.deepStrictEqual(parseTestLine('[tests] unit.tr: adds ... PASS'), { label: 'tests', file: 'unit.tr', test: 'adds', passed: true, detail: 'PASS' });
+    assert.deepStrictEqual(parseTestLine('[tests] unit.tr: adds ... PASS'), { label: 'tests', file: 'unit.tr', test: 'adds', passed: true, skipped: false, detail: 'PASS' });
     assert.strictEqual(parseTestLine('[tests] unit.tr: adds ... FAILED (wrong value)')!.passed, false);
     assert.strictEqual(parseTestLine('[src] main.tr: halves ... PASS')!.test, 'halves');
+    const level = parseTestLine('[tests] unit.tr: adds [-O2] ... PASS')!;
+    assert.strictEqual(level.test, 'adds');
+    assert.strictEqual(level.level, 'O2');
+    assert.strictEqual(parseTestLine('[tests] unit.tr: adds [-Os] ... FAILED (wrong value)')!.level, 'Os');
+    const skip = parseTestLine('[tests] unit.tr: later ... SKIPPED (waits for the new rounding rules)')!;
+    assert.strictEqual(skip.skipped, true);
+    assert.strictEqual(skip.passed, false);
+    assert.strictEqual(skip.test, 'later');
     assert.strictEqual(parseTestLine('=== Test Summary ==='), undefined);
     assert.strictEqual(parseTestLine('Total Tests: 3'), undefined);
 });

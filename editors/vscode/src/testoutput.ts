@@ -10,20 +10,29 @@ export interface TestLine {
     file: string;
     /** The `@test` function's name, when the line reports one test function of the file. */
     test?: string;
+    /** The optimization level of one run of a `@test(levels: ...)` function, `O2` for `name [-O2]`. */
+    level?: string;
     passed: boolean;
+    /** `SKIPPED (reason)`: a `@test(skip: "reason")` function, compiled but not run. */
+    skipped: boolean;
     /** What follows the dots: `PASS`, `PASS (Rejected properly)`, `RUNTIME FAILED (Exit code 1)`, ... */
     detail: string;
 }
 
 /**
  * `[tests] ok.tr ... PASS`  /  `[tests] bad.tr ... RUNTIME FAILED (Exit code 1)`  /
- * `[tests] unit.tr: adds ... PASS` (one `@test` function of a file)
+ * `[tests] unit.tr: adds ... PASS` (one `@test` function of a file)  /
+ * `[tests] unit.tr: adds [-O2] ... PASS` (one level of a `levels:` test)  /
+ * `[tests] unit.tr: later ... SKIPPED (reason)`
  */
 export function parseTestLine(line: string): TestLine | undefined {
-    const m = /^\[([^\]]+)\] (\S+\.tr)(?:: (\S+))? \.\.\. (.*)$/.exec(line.replace(ANSI, '').trimEnd());
+    const m = /^\[([^\]]+)\] (\S+\.tr)(?:: (\S+)(?: \[-(O[0-3s])\])?)? \.\.\. (.*)$/.exec(line.replace(ANSI, '').trimEnd());
     if (!m) return undefined;
-    const parsed: TestLine = { label: m[1], file: m[2], passed: m[4].startsWith('PASS'), detail: m[4] };
+    const parsed: TestLine = {
+        label: m[1], file: m[2], passed: m[5].startsWith('PASS'), skipped: m[5].startsWith('SKIPPED'), detail: m[5],
+    };
     if (m[3] !== undefined) parsed.test = m[3];
+    if (m[4] !== undefined) parsed.level = m[4];
     return parsed;
 }
 
