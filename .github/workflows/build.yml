@@ -242,7 +242,7 @@ jobs:
             dist/turf-lsp-*
 
   macos-arm64:
-    runs-on: macos-14
+    runs-on: macos-latest
     env:
       TARGET: darwin-arm64
     steps:
