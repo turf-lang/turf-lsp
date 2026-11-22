@@ -114,7 +114,7 @@
     "function-decl": {
       "patterns": [
         {
-          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)(\\.)([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "\\b(fn|function)\\s+([A-Za-z_][A-Za-z0-9_]*)(\\.)([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": { "name": "keyword.declaration.turf" },
             "2": { "name": "entity.name.type.struct.turf" },
@@ -123,7 +123,7 @@
           }
         },
         {
-          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "match": "\\b(fn|function)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
           "captures": {
             "1": { "name": "keyword.declaration.turf" },
             "2": { "name": "entity.name.function.turf" }

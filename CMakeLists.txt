@@ -86,3 +86,5 @@ add_subdirectory(${TURF_LANG_DIR} turflang_build EXCLUDE_FROM_ALL)
 target_link_libraries(turf_lsp_core PUBLIC nlohmann_json::nlohmann_json turfcore Threads::Threads)
 target_link_libraries(turf-lsp PRIVATE turf_lsp_core)
 target_link_libraries(turf-lsp-tests PRIVATE turf_lsp_core)
+# The compiler checkout's fixtures (IF-2/IF-5), read by the unit tests.
+target_compile_definitions(turf-lsp-tests PRIVATE TURF_LANG_DIR_STR="${TURF_LANG_DIR}")

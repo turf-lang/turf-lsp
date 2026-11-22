@@ -38,6 +38,12 @@ std::string findProjectRoot(const std::string& file);
 // symlinks where it can)? "src2" is not inside "src".
 bool isInside(const std::string& path, const std::string& dir);
 
+// The directory of every package in a package graph (`turf graph`'s output,
+// turf-lang's docs/reference/schemas/package-graph.schema.json): each
+// package's "src" without its last component. Throws when the text is not a
+// package graph.
+std::vector<std::string> packageDirsFromGraph(const std::string& graphJson);
+
 // Where `turf` is, for asking it for a graph:
 //   1. $TURF_CLI, if set (an explicit choice, used as given);
 //   2. next to the server (`<root>/bin/turf` alongside `<root>/bin/turf-lsp`);

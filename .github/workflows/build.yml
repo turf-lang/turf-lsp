@@ -22,7 +22,7 @@ env:
   # compiler, never its master. compiler-sync.yml follows master nightly, so a
   # change there is known before this pin moves to the next release.
   TURF_LANG_REPO: turf-lang/turf-lang
-  TURF_LANG_REF: v2.2.0
+  TURF_LANG_REF: roadmap/v2.3.0
 
 jobs:
   linux-x64:
@@ -242,7 +242,7 @@ jobs:
             dist/turf-lsp-*
 
   macos-arm64:
-    runs-on: macos-14
+    runs-on: macos-latest
     env:
       TARGET: darwin-arm64
     steps:
@@ -257,8 +257,8 @@ jobs:
 
       - name: Install LLVM
         run: |
-          brew install llvm cmake ninja zstd
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          brew install llvm@22 cmake ninja zstd
+          echo "$(brew --prefix llvm@22)/bin" >> "$GITHUB_PATH"
 
       # turf comes from turf-cli, at the revision the compiler pins
       # (TURF_CLI_REVISION); an older turf-lang still carries it as cli/.
@@ -294,7 +294,7 @@ jobs:
         run: |
           cmake -S turf-lsp -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DTURF_LANG_DIR="$GITHUB_WORKSPACE/turf-lang" -DTURF_STATIC_LLVM=ON \
-            -DLLVM_USE_STATIC_ZSTD=ON -DCMAKE_PREFIX_PATH="$(brew --prefix llvm);$(brew --prefix zstd)" \
+            -DLLVM_USE_STATIC_ZSTD=ON -DCMAKE_PREFIX_PATH="$(brew --prefix llvm@22);$(brew --prefix zstd)" \
             -DCMAKE_EXE_LINKER_FLAGS="-Wl,-dead_strip_dylibs"
           cmake --build build --parallel
 
