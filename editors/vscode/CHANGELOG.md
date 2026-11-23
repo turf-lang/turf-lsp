@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.0
+
+- The language server embeds the TurfLang 2.3.0 compiler front end, and the
+  extension bundles its standard library, so diagnostics, quick fixes and
+  completion follow 2.3.0, including its reworded messages and its new
+  warnings.
+- A diagnostic's labelled spans show as related information, the primary
+  span's label first.
+- In the Testing view a `@test(skip: ...)` test shows as skipped, and a test
+  with `levels:` counts as one test however many levels it runs at.
+- `function` highlights like `fn` in a declaration, as in `function f(...)` and
+  `function T.m(...)`.
+
 ## 1.2.0
 
 - The language server embeds the TurfLang 2.2.0 compiler front end, and the
