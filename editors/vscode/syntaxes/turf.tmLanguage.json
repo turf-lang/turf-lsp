@@ -9,6 +9,7 @@
     { "include": "#numbers" },
     { "include": "#annotations" },
     { "include": "#constants" },
+    { "include": "#lambda" },
     { "include": "#keywords" },
     { "include": "#import" },
     { "include": "#struct-decl" },
@@ -109,6 +110,13 @@
       "captures": {
         "1": { "name": "keyword.declaration.turf" },
         "2": { "name": "entity.name.type.enum.turf" }
+      }
+    },
+    "lambda": {
+      "comment": "`fn(params): R { ... }` in an expression: a function with no name. Not a function type after `:` (`f: fn(int): int`).",
+      "match": "(?<!:)(?<!:\\s)\\b(fn)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "keyword.declaration.function.lambda.turf" }
       }
     },
     "function-decl": {
